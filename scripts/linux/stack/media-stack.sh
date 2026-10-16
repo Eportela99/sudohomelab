@@ -19,7 +19,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.3.0"
+VERSION="0.3.1"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts/linux/stack/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
@@ -34,6 +34,7 @@ PLEX_CLAIM=""
 ASSUME_YES=0
 DATA_DIR_SET=0
 DRY_RUN=0
+GROW_DISK=0        # --grow-disk: allow growing an LVM root without asking
 UNINSTALL=0
 PURGE=0
 
@@ -169,9 +170,18 @@ on_error() {
   [[ $cmd == return* && -n ${LAST_RUN:-} ]] && cmd="$LAST_RUN"
   printf '%s┃%s Failed:  %s (line %s, exit %s)\n' "$C_RED" "$C_RESET" "$cmd" "$line" "$rc" >&2
   printf '%s┃%s Log:     %s\n' "$C_RED" "$C_RESET" "$LOG_FILE" >&2
+  if tail -n 400 "$LOG_FILE" 2>/dev/null | grep -qi 'no space left on device'; then
+    local dpath; dpath=$(docker_data_path 2>/dev/null || echo /)
+    printf '%s┃%s\n%s┃%s %sCause:   the disk is full%s (%s GB free on %s).\n' "$C_RED" "$C_RESET" "$C_RED" "$C_RESET" "$C_BOLD" "$C_RESET" \
+      "$(free_gb "$dpath" 2>/dev/null)" "$(df --output=target "$dpath" 2>/dev/null | tail -n1)" >&2
+    printf '%s┃%s Fix:     free some space, or grow the disk, then re-run.\n' "$C_RED" "$C_RESET" >&2
+    printf '%s┃%s          Unused LVM space? Re-run with %s--grow-disk%s, or: sudo lvextend -r -l +100%%FREE <your LV>\n' "$C_RED" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
+  fi
   printf '%s┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%s\n' "$C_RED" "$C_RESET" >&2
   printf '%sLast lines of the log:%s\n' "$C_GRAY" "$C_RESET" >&2
-  tail -n 25 "$LOG_FILE" 2>/dev/null | sed 's/^/    /' >&2
+  # Image-layer progress ("3f2a… Extracting 16B") is noise here: hide it, collapse repeats.
+  grep -vE '^[[:space:]]*[0-9a-f]{12} (Downloading|Extracting|Waiting|Verifying|Download complete|Pull complete|Already exists|Pulling fs layer)' \
+    "$LOG_FILE" 2>/dev/null | uniq | tail -n 25 | sed 's/^/    /' >&2
   printf '\nThe script is safe to re-run: finished steps are skipped.\n' >&2
   printf 'Report issues: https://github.com/Eportela99/sudohomelab/issues (attach the log)\n\n' >&2
   log "FAILED at line $line: $cmd (exit $rc)"
@@ -269,6 +279,7 @@ Usage: sudo bash media-stack.sh [options]
   --plex-claim=TOKEN                 Claim token from https://plex.tv/claim (optional)
   -y, --yes                          Non-interactive, accept defaults
   --dry-run                          Show what would be installed, change nothing
+  --grow-disk                        If the disk is too small and LVM has free space, grow it (no prompt)
   --uninstall                        Stop and remove the stack (keeps media + configs)
   --purge                            With --uninstall, also delete app configs
   -h, --help                         Show this help
@@ -289,6 +300,7 @@ parse_args() {
       --subtitle-langs=*) SUB_LANGS=${arg#*=} ;;
       -y|--yes) ASSUME_YES=1 ;;
       --dry-run) DRY_RUN=1 ;;
+      --grow-disk) GROW_DISK=1 ;;
       --uninstall) UNINSTALL=1 ;;
       --purge) PURGE=1 ;;
       -h|--help) usage; exit 0 ;;
@@ -602,6 +614,7 @@ choose_options() {
 
   if (( DRY_RUN )); then
     report_ports
+    report_disk
     info "Dry run: nothing was changed."
     exit 0
   fi
@@ -620,35 +633,86 @@ stack_images() { # images this selection needs
   printf '%s\n' "${imgs[@]}"
 }
 
-check_disk() {
-  local root free_gb missing=0 need img
-  root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
-  [[ -d $root ]] || root=/var/lib
-  free_gb=$(df -Pk "$root" | awk 'NR==2 {printf "%.1f", $4/1048576}')
-  for img in $(stack_images); do docker image inspect "$img" >/dev/null 2>&1 || missing=$((missing + 1)); done
-  # ~0.6 GB per image still to download, plus 1 GB headroom for app databases.
-  need=$(awk -v m="$missing" 'BEGIN {printf "%.1f", m * 0.6 + 1}')
-  log "disk: ${free_gb} GB free at $root, $missing images to pull, need ~${need} GB"
-  if awk -v f="$free_gb" -v n="$need" 'BEGIN {exit !(f < n)}'; then
-    lvm_hint
-    die "Only ${free_gb} GB free for Docker, ~${need} GB needed ($missing images to download)."
-  elif awk -v f="$free_gb" -v n="$need" 'BEGIN {exit !(f < n + 3)}'; then
-    warn "Low disk: ${free_gb} GB free for Docker (~${need} GB needed now)."
-    lvm_hint
-  else
-    ok "Disk: ${free_gb} GB free for Docker"
-  fi
+# Disk needed per image (GB): unpacked layers plus the compressed copy Docker 29's
+# containerd store keeps. Measured on amd64, Oct 2026.
+image_gb() {
+  case $1 in
+    *tdarr*) echo 6.0 ;; *seerr*) echo 1.6 ;; *jellyfin*) echo 1.7 ;; *plex*) echo 0.9 ;;
+    *bazarr*) echo 0.8 ;; *lidarr*) echo 0.6 ;; *qbittorrent*) echo 0.45 ;; *) echo 0.4 ;;
+  esac
 }
 
-# Ubuntu's installer often gives the root LV only half the disk. Point that out.
-lvm_hint() {
-  local dev vfree
-  dev=$(findmnt -no SOURCE / 2>/dev/null) || return 0
-  [[ $dev == /dev/mapper/* ]] || return 0
-  vfree=$(lvs --noheadings -o vg_free --units g --nosuffix "$dev" 2>/dev/null | tr -d ' ') || return 0
-  [[ -n $vfree ]] && awk -v v="$vfree" 'BEGIN {exit !(v >= 1)}' || return 0
-  info "Your volume group has ${vfree%.*} GB unallocated. Give it to / with:"
-  info "  ${C_CYAN}sudo lvextend -r -l +100%FREE $dev${C_RESET}"
+# Where images actually land: containerd's store (Docker 29 default) or the classic root.
+docker_data_path() {
+  local p
+  if docker info -f '{{range .DriverStatus}}{{index . 1}} {{end}}' 2>/dev/null | grep -q 'io.containerd.snapshotter'; then
+    p=/var/lib/containerd
+  else
+    p=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+  fi
+  while [[ ! -d $p && $p != / ]]; do p=$(dirname "$p"); done
+  echo "$p"
+}
+
+free_gb() { df -Pk "$1" | awk 'NR==2 {printf "%.1f", $4/1048576}'; }
+lt() { awk -v a="$1" -v b="$2" 'BEGIN {exit !(a < b)}'; }
+
+# Ubuntu's installer often gives the root LV only half the disk. Offer to fix it.
+grow_disk() { # grow_disk path → 0 if the filesystem was grown
+  local path=$1 dev vfree mnt
+  command -v lvs >/dev/null 2>&1 || return 1
+  dev=$(df --output=source "$path" | tail -n1)
+  mnt=$(df --output=target "$path" | tail -n1)
+  vfree=$(lvs --noheadings -o vg_free --units g --nosuffix "$dev" 2>/dev/null | tr -d ' ')
+  [[ -n $vfree ]] && ! lt "$vfree" 1 || return 1
+  info "Your disk has ${vfree%.*} GB of unallocated LVM space (Ubuntu's installer often leaves half the disk unused)."
+  if (( GROW_DISK )) || { (( ! ASSUME_YES )) && has_tty && confirm "Add it to $mnt now? Safe while running, no reboot."; }; then
+    run "Growing $mnt by ${vfree%.*} GB" lvextend -r -l +100%FREE "$dev"
+    return 0
+  fi
+  info "To do it yourself later:  ${C_CYAN}sudo lvextend -r -l +100%FREE $dev${C_RESET}"
+  return 1
+}
+
+report_disk() { # dry run: the same estimate as check_disk, without prompts or changes
+  command -v docker >/dev/null 2>&1 || return 0
+  local path free need=1 img missing=0
+  path=$(docker_data_path)
+  for img in $(stack_images); do
+    docker image inspect "$img" >/dev/null 2>&1 && continue
+    missing=$((missing + 1)); need=$(awk -v a="$need" -v b="$(image_gb "$img")" 'BEGIN {print a + b}')
+  done
+  free=$(free_gb "$path")
+  if (( missing == 0 )); then ok "Disk: images already downloaded (${free} GB free)"
+  elif lt "$free" "$need"; then warn "Disk: ${free} GB free, ~${need} GB needed for $missing image(s): the install would stop here"
+  else ok "Disk: ${free} GB free (~${need} GB needed for $missing image(s))"; fi
+}
+
+check_disk() {
+  local path free need=1 img missing=0 big=""
+  path=$(docker_data_path)
+  for img in $(stack_images); do
+    docker image inspect "$img" >/dev/null 2>&1 && continue
+    missing=$((missing + 1))
+    need=$(awk -v a="$need" -v b="$(image_gb "$img")" 'BEGIN {print a + b}')
+    [[ $img == *tdarr* ]] && big=" (Tdarr alone needs ~6 GB)"
+  done
+  free=$(free_gb "$path")
+  log "disk: ${free} GB free at $path, $missing images to pull, need ~${need} GB"
+  if (( missing == 0 )); then ok "Disk: images already downloaded (${free} GB free)"; return 0; fi
+  if lt "$free" "$need"; then
+    warn "Not enough disk: ${free} GB free on $(df --output=target "$path" | tail -n1), ~${need} GB needed for $missing image(s)$big."
+    if grow_disk "$path"; then
+      free=$(free_gb "$path")
+      lt "$free" "$need" || { ok "Disk: ${free} GB free now"; return 0; }
+    fi
+    die "Free up space (or skip the biggest apps${big:+, e.g. Tdarr}) and re-run. Nothing has been installed yet."
+  elif lt "$free" "$(awk -v n="$need" 'BEGIN {print n + 3}')"; then
+    warn "Low disk: ${free} GB free, ~${need} GB needed for $missing image(s)$big."
+    grow_disk "$path" || true
+  else
+    ok "Disk: ${free} GB free (~${need} GB needed)"
+  fi
 }
 
 # ── Port conflicts ────────────────────────────────────────────────────────────
