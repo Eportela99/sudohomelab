@@ -19,7 +19,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.1.1"
+VERSION="0.2.0"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts/linux/stack/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
@@ -41,7 +41,7 @@ SEERR_IMAGE="ghcr.io/seerr-team/seerr:latest"
 LSIO="lscr.io/linuxserver"
 
 # Host ports
-P_JELLYFIN=8096; P_PLEX=32400; P_QBIT=8080; P_SAB=8085
+P_JELLYFIN=8096; P_PLEX=32400; P_QBIT=8080; P_TORRENT=6881; P_SAB=8085
 P_RADARR=7878; P_SONARR=8989; P_PROWLARR=9696; P_SEERR=5055
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -455,6 +455,12 @@ choose_options() {
     local prev_data
     prev_data=$(sed -n 's/^DATA_DIR=//p' "$INSTALL_DIR/.env")
     (( DATA_DIR_SET )) || DATA_DIR=${prev_data:-$DATA_DIR}
+    local v val
+    for v in "${PORT_VARS[@]}"; do
+      val=$(sed -n "s/^$v=//p" "$INSTALL_DIR/.env")
+      [[ $val =~ ^[0-9]+$ ]] && printf -v "$v" '%s' "$val"
+    done
+    [[ -z $SERVER && $PREV_SERVER == none ]] && (( ASSUME_YES )) && SERVER=none
     [[ -n $PREV_SERVER ]] && info "Currently installed: ${PREV_SERVER} + ${PREV_DOWNLOADER} (shown as the defaults)"
   fi
 
@@ -466,7 +472,7 @@ choose_options() {
       1) SERVER=jellyfin ;; 2) SERVER=plex ;; 3) SERVER=both ;;
     esac
   fi
-  [[ $SERVER =~ ^(jellyfin|plex|both)$ ]] || die "Invalid --server '$SERVER' (use jellyfin, plex or both)."
+  [[ $SERVER =~ ^(jellyfin|plex|both|none)$ ]] || die "Invalid --server '$SERVER' (use jellyfin, plex or both)."
 
   if [[ -z $DOWNLOADER ]]; then
     case $(menu "Which download client do you want?" "$(menu_index "${PREV_DOWNLOADER:-qbittorrent}" qbittorrent sabnzbd both)" \
@@ -520,6 +526,7 @@ choose_options() {
   fi
 
   if (( DRY_RUN )); then
+    report_ports
     info "Dry run: nothing was changed."
     exit 0
   fi
@@ -566,22 +573,139 @@ lvm_hint() {
   info "  ${C_CYAN}sudo lvextend -r -l +100%FREE $dev${C_RESET}"
 }
 
-check_ports() {
-  local ports=("$P_RADARR" "$P_SONARR" "$P_PROWLARR" "$P_SEERR") busy=()
-  want jellyfin && ports+=("$P_JELLYFIN")
-  want plex && ports+=("$P_PLEX")
-  want qbittorrent && ports+=("$P_QBIT" 6881)
-  want sabnzbd && ports+=("$P_SAB")
-  # On a re-run our own containers hold these ports, which is fine.
-  if [[ -f $INSTALL_DIR/docker-compose.yml ]] && [[ -n $(dc ps -q 2>/dev/null) ]]; then
-    ok "Existing media stack detected: updating it in place"; return 0
+# ── Port conflicts ────────────────────────────────────────────────────────────
+# Apps talk to each other on their internal container ports, so a host port
+# can move freely without touching the wiring. Exceptions: Plex (host network,
+# fixed 32400), qBittorrent's web UI (same port inside and out, a linuxserver
+# CSRF requirement) and the torrent port (peers must reach the announced port).
+
+PORT_VARS=(P_JELLYFIN P_PLEX P_QBIT P_TORRENT P_SAB P_RADARR P_SONARR P_PROWLARR P_SEERR)
+
+port_label() {
+  case $1 in
+    P_JELLYFIN) echo "Jellyfin" ;; P_PLEX) echo "Plex" ;; P_QBIT) echo "qBittorrent web UI" ;;
+    P_TORRENT) echo "qBittorrent torrent traffic" ;; P_SAB) echo "SABnzbd" ;; P_RADARR) echo "Radarr" ;;
+    P_SONARR) echo "Sonarr" ;; P_PROWLARR) echo "Prowlarr" ;; P_SEERR) echo "Seerr" ;;
+  esac
+}
+
+port_needed() { # is this port variable used by the current selection?
+  case $1 in
+    P_JELLYFIN) want jellyfin ;; P_PLEX) want plex ;; P_QBIT|P_TORRENT) want qbittorrent ;;
+    P_SAB) want sabnzbd ;; *) return 0 ;;
+  esac
+}
+
+# Who holds a port? Prints e.g. 'container "nginx"' or 'program "casaos-gateway"'
+# (empty if free). Containers of this stack count as free: a re-run reuses them.
+port_owner() { # port_owner port [udp]
+  local p=$1 proto=${2:-tcp} line proc name
+  name=$(docker ps --format '{{.Names}}	{{.Ports}}' 2>/dev/null |
+    awk -F'\t' -v a=":$p->" -v b="]:$p->" 'index($2, a) || index($2, b) {print $1; exit}')
+  if [[ -n $name ]]; then
+    [[ $(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$name" 2>/dev/null) == mediastack ]] && return 0
+    echo "container \"$name\""; return 0
   fi
-  local p
-  for p in "${ports[@]}"; do
-    if ss -Hltn "sport = :$p" 2>/dev/null | grep -q .; then busy+=("$p"); fi
+  if [[ $proto == udp ]]; then line=$(ss -Hlunp "sport = :$p" 2>/dev/null | head -n1)
+  else line=$(ss -Hltnp "sport = :$p" 2>/dev/null | head -n1); fi
+  [[ -z $line ]] && return 0
+  proc=$(sed -n 's/.*users:(("\([^"]*\)".*/\1/p' <<<"$line")
+  # Our own Plex runs on the host network, so it shows up as a program.
+  if [[ $proc == Plex* ]] && [[ $(docker inspect -f '{{.State.Running}} {{index .Config.Labels "com.docker.compose.project"}}' plex 2>/dev/null) == "true mediastack" ]]; then
+    return 0
+  fi
+  echo "program \"${proc:-unknown}\""
+}
+
+port_taken() { # free for us? checks other processes/containers and ports already assigned in this stack
+  local p=$1 self=$2 v
+  for v in "${PORT_VARS[@]}"; do
+    [[ $v != "$self" ]] && port_needed "$v" && [[ ${!v} == "$p" ]] && return 0
   done
-  (( ${#busy[@]} == 0 )) || die "These ports are already in use: ${busy[*]}. Stop whatever uses them and re-run."
-  ok "Required ports are free"
+  [[ -n $(port_owner "$p") ]] && return 0
+  [[ $self == P_TORRENT && -n $(port_owner "$p" udp) ]] && return 0
+  return 1
+}
+
+next_free_port() { # next_free_port start var
+  local p=$(( $1 + 1 )) tries=0
+  while (( tries < 200 )); do
+    (( p > 65535 )) && p=20000
+    port_taken "$p" "$2" || { echo "$p"; return 0; }
+    p=$((p + 1)); tries=$((tries + 1))
+  done
+  return 1
+}
+
+resolve_port() { # resolve_port VAR owner
+  local var=$1 owner=$2 label cur alt choice p
+  label=$(port_label "$var"); cur=${!var}
+  warn "Port $cur ($label) is already used by $owner"
+
+  if [[ $var == P_PLEX ]]; then
+    # Plex runs on the host network and always listens on 32400.
+    info "Plex can't change ports. If another Plex runs here, you can keep using that one."
+    case $(menu "What should I do?" 1 \
+      "Skip Plex|don't install Plex (Seerr can still use the Plex you already have)" \
+      "Cancel|nothing has been installed yet") in
+      1) case $SERVER in both) SERVER=jellyfin ;; plex) SERVER=none ;; esac
+         ok "Skipping Plex"; return 0 ;;
+      *) info "Cancelled. Nothing was installed."; exit 0 ;;
+    esac
+  fi
+
+  alt=$(next_free_port "$cur" "$var") || die "Couldn't find a free port for $label."
+  choice=$(menu "What should I do?" 1 \
+    "Use $alt|next free port" \
+    "Choose a port|type the port you want" \
+    "Cancel|nothing has been installed yet")
+  case $choice in
+    1) p=$alt ;;
+    2)
+      while :; do
+        p=$(ask "Port for $label (1024-65535)" "$alt")
+        if [[ ! $p =~ ^[0-9]+$ ]] || (( p < 1024 || p > 65535 )); then warn "Enter a number between 1024 and 65535."; continue; fi
+        if port_taken "$p" "$var"; then warn "Port $p is taken too: try another."; continue; fi
+        break
+      done
+      ;;
+    *) info "Cancelled. Nothing was installed."; exit 0 ;;
+  esac
+  printf -v "$var" '%s' "$p"
+  ok "$label will use port $p"
+}
+
+# Dry run: say what check_ports would do, without asking or changing anything.
+report_ports() {
+  command -v ss >/dev/null 2>&1 || return 0
+  local var owner any=0
+  for var in "${PORT_VARS[@]}"; do
+    port_needed "$var" || continue
+    owner=$(port_owner "${!var}")
+    [[ $var == P_TORRENT && -z $owner ]] && owner=$(port_owner "${!var}" udp)
+    [[ -z $owner ]] && continue
+    any=1
+    if [[ $var == P_PLEX ]]; then
+      warn "Port ${!var} ($(port_label "$var")) is used by $owner: you'd be offered to skip Plex"
+    else
+      warn "Port ${!var} ($(port_label "$var")) is used by $owner: would move to $(next_free_port "${!var}" "$var")"
+    fi
+  done
+  (( any )) || ok "All ports for this plan are free (or already used by this stack)"
+}
+
+check_ports() {
+  local var owner moved=0
+  for var in "${PORT_VARS[@]}"; do
+    port_needed "$var" || continue
+    owner=$(port_owner "${!var}")
+    [[ $var == P_TORRENT && -z $owner ]] && owner=$(port_owner "${!var}" udp)
+    if [[ -n $owner ]]; then
+      resolve_port "$var" "$owner"
+      moved=1
+    fi
+  done
+  (( moved )) || ok "Required ports are free"
 }
 
 apt_update() {
@@ -718,7 +842,8 @@ prepare_folders() {
 
   # Pre-seed API keys so every app knows the others' keys before first boot.
   local app port name
-  for app in radarr:$P_RADARR:Radarr sonarr:$P_SONARR:Sonarr prowlarr:$P_PROWLARR:Prowlarr; do
+  # Internal container ports (fixed); host ports are only in the compose mapping.
+  for app in radarr:7878:Radarr sonarr:8989:Sonarr prowlarr:9696:Prowlarr; do
     IFS=: read -r name port _ <<<"$app"
     local f="$INSTALL_DIR/config/$name/config.xml"
     if [[ ! -f $f ]]; then
@@ -736,7 +861,7 @@ prepare_folders() {
 Session\\DefaultSavePath=/data/Active_Downloads/torrents
 Session\\TempPath=/data/Active_Downloads/torrents/incomplete
 Session\\TempPathEnabled=true
-Session\\Port=6881
+Session\\Port=$P_TORRENT
 
 [LegalNotice]
 Accepted=true
@@ -745,7 +870,7 @@ Accepted=true
 Downloads\\SavePath=/data/Active_Downloads/torrents
 Downloads\\TempPath=/data/Active_Downloads/torrents/incomplete
 Downloads\\TempPathEnabled=true
-WebUI\\Port=8080
+WebUI\\Port=$P_QBIT
 WebUI\\Username=$APP_USER
 WebUI\\Password_PBKDF2="$(qbit_password_hash)"
 WebUI\\HostHeaderValidation=false
@@ -776,6 +901,8 @@ PLEX_CLAIM=$PLEX_CLAIM
 STACK_SERVER=$SERVER
 STACK_DOWNLOADER=$DOWNLOADER
 EOF
+  local v
+  for v in "${PORT_VARS[@]}"; do echo "$v=${!v}" >>"$INSTALL_DIR/.env"; done
   printf 'APP_USER=%s\nAPP_PASS=%s\n' "$APP_USER" "$APP_PASS" >"$INSTALL_DIR/.secrets"
   umask 022
 
@@ -836,12 +963,12 @@ EOF
       PUID: \${PUID}
       PGID: \${PGID}
       TZ: \${TZ}
-      WEBUI_PORT: 8080
-      TORRENTING_PORT: 6881
+      WEBUI_PORT: $P_QBIT
+      TORRENTING_PORT: $P_TORRENT
     ports:
-      - "$P_QBIT:8080"
-      - "6881:6881"
-      - "6881:6881/udp"
+      - "$P_QBIT:$P_QBIT"
+      - "$P_TORRENT:$P_TORRENT"
+      - "$P_TORRENT:$P_TORRENT/udp"
     volumes:
       - ./config/qbittorrent:/config
       - \${DATA_DIR}:/data
@@ -957,8 +1084,20 @@ add_root_folder() { # url key path
 # Builds the resource from the app's own schema, so field names always match the version installed.
 add_from_schema() {
   local url=$1 v=$2 key=$3 res=$4 impl=$5 name=$6 fields=$7 extra=${8:-.}
-  if api GET "$url/api/$v/$res" "$key" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
-    log "$res '$name' already present"; return 0
+  # Already there (re-run): update its fields in place, so a changed port or
+  # password follows along instead of leaving a stale connection.
+  local existing
+  existing=$(api GET "$url/api/$v/$res" "$key" | jq --arg n "$name" 'first(.[] | select(.name == $n)) // empty')
+  if [[ -n $existing ]]; then
+    local updated
+    updated=$(jq --argjson f "$fields" '.fields |= map(.name as $k | if ($f | has($k)) then .value = $f[$k] else . end)' <<<"$existing")
+    if [[ $(jq -S .fields <<<"$updated") != $(jq -S .fields <<<"$existing") ]] || jq -e '.fields[] | select(.name == "password" and .value == "********")' <<<"$existing" >/dev/null; then
+      api PUT "$url/api/$v/$res/$(jq -r .id <<<"$existing")" "$key" "$updated" >/dev/null
+      log "$res '$name' updated"
+    else
+      log "$res '$name' already up to date"
+    fi
+    return 0
   fi
   local body
   body=$(api GET "$url/api/$v/$res/schema" "$key" | jq --arg impl "$impl" --arg n "$name" --argjson f "$fields" "
@@ -1026,7 +1165,7 @@ wire_radarr() {
   add_root_folder "$RADARR_URL" "$RADARR_KEY" /data/Movies
   if want qbittorrent; then
     add_from_schema "$RADARR_URL" v3 "$RADARR_KEY" downloadclient QBittorrent qBittorrent \
-      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" '{host:"qbittorrent", port:8080, username:$u, password:$p, movieCategory:"movies"}')"
+      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg port "$P_QBIT" '{host:"qbittorrent", port:($port|tonumber), username:$u, password:$p, movieCategory:"movies"}')"
   fi
   if want sabnzbd; then
     add_from_schema "$RADARR_URL" v3 "$RADARR_KEY" downloadclient Sabnzbd SABnzbd \
@@ -1038,7 +1177,7 @@ wire_sonarr() {
   add_root_folder "$SONARR_URL" "$SONARR_KEY" /data/TV_Shows
   if want qbittorrent; then
     add_from_schema "$SONARR_URL" v3 "$SONARR_KEY" downloadclient QBittorrent qBittorrent \
-      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" '{host:"qbittorrent", port:8080, username:$u, password:$p, tvCategory:"tv"}')"
+      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg port "$P_QBIT" '{host:"qbittorrent", port:($port|tonumber), username:$u, password:$p, tvCategory:"tv"}')"
   fi
   if want sabnzbd; then
     add_from_schema "$SONARR_URL" v3 "$SONARR_KEY" downloadclient Sabnzbd SABnzbd \
@@ -1076,14 +1215,14 @@ seerr_setup() {
   local rp sp
   rp=$(pick_profile "$RADARR_URL" "$RADARR_KEY"); sp=$(pick_profile "$SONARR_URL" "$SONARR_KEY")
   cp "$settings" "$settings.bak"
-  jq --arg rk "$RADARR_KEY" --arg sk "$SONARR_KEY" --arg ip "$HOST_IP" \
+  jq --arg rk "$RADARR_KEY" --arg sk "$SONARR_KEY" --arg ip "$HOST_IP" --arg rport "$P_RADARR" --arg sport "$P_SONARR" \
      --argjson rpid "${rp%%$'\t'*}" --arg rpn "${rp#*$'\t'}" \
      --argjson spid "${sp%%$'\t'*}" --arg spn "${sp#*$'\t'}" \
      --arg server "$SERVER" '
     .radarr = [{
       id: 0, name: "Radarr", hostname: "radarr", port: 7878, apiKey: $rk, useSsl: false, baseUrl: "",
       activeProfileId: $rpid, activeProfileName: $rpn, activeDirectory: "/data/Movies",
-      tags: [], is4k: false, isDefault: true, externalUrl: "http://\($ip):7878",
+      tags: [], is4k: false, isDefault: true, externalUrl: "http://\($ip):\($rport)",
       syncEnabled: true, preventSearch: false, tagRequests: false, overrideRule: [],
       minimumAvailability: "released"
     }]
@@ -1091,12 +1230,12 @@ seerr_setup() {
       id: 0, name: "Sonarr", hostname: "sonarr", port: 8989, apiKey: $sk, useSsl: false, baseUrl: "",
       activeProfileId: $spid, activeProfileName: $spn, activeDirectory: "/data/TV_Shows",
       activeAnimeProfileId: $spid, activeAnimeProfileName: $spn, activeAnimeDirectory: "/data/TV_Shows",
-      tags: [], animeTags: [], is4k: false, isDefault: true, externalUrl: "http://\($ip):8989",
+      tags: [], animeTags: [], is4k: false, isDefault: true, externalUrl: "http://\($ip):\($sport)",
       syncEnabled: true, preventSearch: false, tagRequests: false, overrideRule: [],
       seriesType: "standard", animeSeriesType: "anime", enableSeasonFolders: true, monitorNewItems: "all"
     }]
     | if ($server == "jellyfin" or $server == "both") then .jellyfin.ip = "jellyfin" | .jellyfin.port = 8096 else . end
-    | if ($server == "plex" or $server == "both") then .plex.ip = $ip | .plex.port = 32400 else . end
+    | if ($server == "plex" or $server == "both" or $server == "none") then .plex.ip = $ip | .plex.port = 32400 else . end
   ' "$settings.bak" >"$settings"
   chown 1000:1000 "$settings"
 
@@ -1162,7 +1301,7 @@ summary() {
     echo "Radarr       http://$ip:$P_RADARR      API key: $RADARR_KEY"
     echo "Sonarr       http://$ip:$P_SONARR      API key: $SONARR_KEY"
     echo "Prowlarr     http://$ip:$P_PROWLARR      API key: $PROWLARR_KEY"
-    want qbittorrent && echo "qBittorrent  http://$ip:$P_QBIT"
+    want qbittorrent && echo "qBittorrent  http://$ip:$P_QBIT      torrent port: $P_TORRENT (forward on your router)"
     want sabnzbd && echo "SABnzbd      http://$ip:$P_SAB      API key: ${SAB_KEY:-}"
     echo
     echo "Folders (inside every container the data folder is /data)"
@@ -1199,7 +1338,7 @@ summary() {
       "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_CYAN" "$C_RESET" "$C_CYAN" "$C_RESET"
   fi
   local seerr_srv
-  if [[ $SERVER == plex ]]; then seerr_srv="your Plex account"; else seerr_srv="Jellyfin (server URL: http://jellyfin:8096)"; fi
+  if [[ $SERVER == plex || $SERVER == none ]]; then seerr_srv="your Plex account"; else seerr_srv="Jellyfin (server URL: http://jellyfin:8096)"; fi
   printf '    %s%d.%s %sSeerr%s → sign in with %s. Radarr & Sonarr are already connected.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$seerr_srv"
   want sabnzbd && printf '    %s%d.%s %sSABnzbd%s → add your usenet provider in the setup wizard.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET"
 

@@ -51,6 +51,7 @@ Options: `--server=jellyfin|plex|both`, `--downloader=qbittorrent|sabnzbd|both`,
 - **Logs:** `/var/log/sudohomelab/media-stack-*.log`
 - **Credentials:** `/opt/sudohomelab/media-stack/credentials.txt` (root only)
 - **Re-running is safe:** finished steps are skipped.
+- **Port already taken?** The installer shows what's using it (a program or another container) and lets you pick the next free port, type your own, or cancel. With `--yes` it picks the next free port automatically. Apps talk to each other on internal container ports, so moving a port never breaks the wiring. Plex is the exception: it must use 32400, so you can skip it and keep a Plex you already run. Chosen ports are saved for re-runs.
 
 ## Website
 
