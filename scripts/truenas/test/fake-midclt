@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Test double for TrueNAS's `midclt`, enough for the media-stack installer's
+# custom-app mode. Datasets are plain folders under /mnt; a "custom app" is a
+# compose project named ix-<app>, like on real TrueNAS. Not for catalog apps.
+set -euo pipefail
+[[ ${1:-} == call ]] || { echo "usage: midclt call [-j] method [args]" >&2; exit 2; }
+shift; [[ ${1:-} == -j ]] && shift
+method=$1; shift || true
+state=/var/lib/fake-midclt; mkdir -p "$state/apps"
+
+name_from_filter() { jq -r '.[0][2]' <<<"$1"; }
+
+case $method in
+  system.version) echo '"TrueNAS-SCALE-25.10.3"' ;;
+  docker.status) echo '{"status": "RUNNING", "description": ""}' ;;
+  docker.config) echo '{"pool": "tank", "enable_image_updates": true}' ;;
+  system.general.config) echo '{"timezone": "America/New_York"}' ;;
+  pool.query) ls -1 /mnt | grep -v '^\.' | jq -R '{name: .}' | jq -s . ;;
+  pool.dataset.query)
+    id=$(name_from_filter "${1:-[]}")
+    if [[ -d /mnt/$id ]]; then jq -n --arg id "$id" '[{id: $id, available: {parsed: 2000000000000}}]'; else echo '[]'; fi ;;
+  pool.dataset.create) n=$(jq -r .name <<<"$1"); mkdir -p "/mnt/$n"; jq -n --arg id "$n" '{id: $id}' ;;
+  pool.dataset.delete) rm -rf "/mnt/$1"; echo true ;;
+  app.query)
+    n=$(name_from_filter "${1:-[]}")
+    if [[ -f $state/apps/$n.json ]]; then jq -n --arg n "$n" '[{name: $n}]'; else echo '[]'; fi ;;
+  app.create|app.update)
+    if [[ $method == app.create ]]; then body=$1; n=$(jq -r .app_name <<<"$body")
+    else n=$1; body=$2; fi
+    if [[ $method == app.create ]] && [[ $(jq -r '.custom_app // false' <<<"$body") != true ]]; then
+      echo "[EFAULT] fake midclt can't emulate catalog apps" >&2; exit 1
+    fi
+    jq '.custom_compose_config' <<<"$body" >"$state/apps/$n.json"
+    echo "[0%] Deploying $n…"
+    docker compose -p "ix-$n" -f "$state/apps/$n.json" up -d --remove-orphans 2>&1
+    echo "[100%] Deployed"
+    jq -n --arg n "$n" '{name: $n, state: "RUNNING"}' ;;
+  app.delete)
+    n=$1
+    docker compose -p "ix-$n" -f "$state/apps/$n.json" down 2>&1 || true
+    rm -f "$state/apps/$n.json"; echo true ;;
+  *) echo "[ENOMETHOD] fake midclt: $method not emulated" >&2; exit 1 ;;
+esac

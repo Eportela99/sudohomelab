@@ -35,7 +35,7 @@ export const CATEGORIES = [
     stack: {
       id: 'media-stack',
       name: 'The Media Stack',
-      available: ['linux'],
+      available: ['linux', 'truenas'],
       pitch: 'One command. Every app installed, API keys exchanged, download clients, indexers and root folders already connected.',
       options: [
         { key: 'server', label: 'Media server', type: 'one', choices: ['plex', 'jellyfin'], default: 'jellyfin' },

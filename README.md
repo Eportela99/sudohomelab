@@ -9,6 +9,7 @@ One-line installers and **pre-wired stacks** for Proxmox, TrueNAS SCALE, Ubuntu 
 | Script | Platform | Status |
 | --- | --- | --- |
 | Media Stack | Ubuntu / Debian | 🧪 Beta |
+| Media Stack | TrueNAS SCALE 24.10+ | 🧪 Beta (testing) |
 
 ### Media Stack (Ubuntu / Debian)
 
@@ -58,6 +59,33 @@ Options: `--server=jellyfin|plex|both`, `--downloader=qbittorrent|sabnzbd|both`,
 - **Credentials:** `/opt/sudohomelab/media-stack/credentials.txt` (root only)
 - **Re-running is safe:** finished steps are skipped.
 - **Port already taken?** The installer shows what's using it (a program or another container) and lets you pick the next free port, type your own, or cancel. With `--yes` it picks the next free port automatically. Apps talk to each other on internal container ports, so moving a port never breaks the wiring. Plex is the exception: it must use 32400, so you can skip it and keep a Plex you already run. Chosen ports are saved for re-runs.
+
+### Media Stack (TrueNAS SCALE 24.10+)
+
+Run it in the TrueNAS shell (System → Shell, or SSH as an admin):
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts/truenas/stack/media-stack.sh)"
+```
+
+Same apps, menus and wiring as the Ubuntu version. It also asks **how the stack should appear in TrueNAS**:
+
+- **Custom App:** one app called `mediastack` holding the whole stack (one compose file).
+- **Catalog apps:** each app installed from the TrueNAS catalog and listed separately in Apps. They join a shared Docker network (`mediastack`) with aliases, so they find each other by name just like in one compose project.
+
+Differences from Ubuntu:
+
+- Nothing gets installed on the TrueNAS OS (it's read-only). If `jq` is missing, a static copy is fetched for the run.
+- You pick a pool. It creates the datasets `<pool>/apps/mediastack` (app settings) and `<pool>/media` (media + downloads). Movies, TV_Shows, Music and Active_Downloads are folders inside **one** dataset, because hardlinks can't cross datasets.
+- Apps run as TrueNAS's built-in `apps` user (568:568).
+- Needs the Apps service enabled (Apps → Configuration → Choose Pool).
+- Options: `--mode=custom|catalog`, `--pool=NAME`, plus all the Ubuntu options.
+
+Uninstall (the media dataset is never touched; `--purge` also deletes `<pool>/apps/mediastack`):
+
+```bash
+sudo bash -c "$(curl -fsSL <truenas url>)" _ --uninstall --purge
+```
 
 ## Website
 

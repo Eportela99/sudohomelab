@@ -45,6 +45,14 @@ LSIO="lscr.io/linuxserver"
 P_JELLYFIN=8096; P_PLEX=32400; P_QBIT=8080; P_TORRENT=6881; P_SAB=8085
 P_RADARR=7878; P_SONARR=8989; P_PROWLARR=9696; P_SEERR=5055
 P_LIDARR=8686; P_BAZARR=6767; P_TDARR=8265; P_TDARR_SRV=8266
+
+# How the apps reach EACH OTHER (host name / port inside the shared network).
+# One compose project: service names + the images' internal ports. The TrueNAS
+# script overrides these for its catalog-apps mode.
+H_RADARR=radarr; I_RADARR=7878; H_SONARR=sonarr; I_SONARR=8989; H_PROWLARR=prowlarr; I_PROWLARR=9696
+H_LIDARR=lidarr; I_LIDARR=8686; H_QBIT=qbittorrent; H_SAB=sabnzbd; I_SAB=8080; H_JELLYFIN=jellyfin; I_JELLYFIN=8096
+# qBittorrent's web UI listens on the same port inside and out, so I_QBIT follows P_QBIT (see i_qbit).
+SEERR_UID=1000   # Seerr's image runs as uid 1000
 TDARR_IMAGE="ghcr.io/haveagitgat/tdarr:latest"
 EXTRAS=""          # comma list of: lidarr, bazarr, tdarr
 EXTRAS_SET=0
@@ -346,6 +354,17 @@ detect_tz() {
 }
 
 dc() { docker compose --project-directory "$INSTALL_DIR" -f "$INSTALL_DIR/docker-compose.yml" "$@"; }
+
+# Container control and deployment. The TrueNAS script redefines these.
+svc_up() { dc up -d "$1"; }
+svc_stop() { dc stop "$1"; }
+svc_start() { dc start "$1"; }
+svc_restart() { dc restart "$1"; }
+pull_images() { run "Downloading images" dc --progress plain pull; }
+deploy_stack() { run "Starting $1 containers" dc --progress plain up -d --remove-orphans; }
+manage_hint() { printf '\n    %sManage:%s cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"; }
+# Compose project names that count as "this stack" when checking port owners.
+our_project() { [[ $1 == mediastack ]]; }
 
 # HTTP helpers. Bodies of failed requests land in the log via --fail-with-body.
 http_code() { curl -s -o /dev/null -m 5 -w '%{http_code}' "$@" 2>/dev/null || true; }
@@ -747,7 +766,7 @@ port_owner() { # port_owner port [udp]
   name=$(docker ps --format '{{.Names}}	{{.Ports}}' 2>/dev/null |
     awk -F'\t' -v a=":$p->" -v b="]:$p->" 'index($2, a) || index($2, b) {print $1; exit}')
   if [[ -n $name ]]; then
-    [[ $(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$name" 2>/dev/null) == mediastack ]] && return 0
+    our_project "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$name" 2>/dev/null)" && return 0
     echo "container \"$name\""; return 0
   fi
   if [[ $proto == udp ]]; then line=$(ss -Hlunp "sport = :$p" 2>/dev/null | head -n1)
@@ -755,7 +774,8 @@ port_owner() { # port_owner port [udp]
   [[ -z $line ]] && return 0
   proc=$(sed -n 's/.*users:(("\([^"]*\)".*/\1/p' <<<"$line")
   # Our own Plex runs on the host network, so it shows up as a program.
-  if [[ $proc == Plex* ]] && [[ $(docker inspect -f '{{.State.Running}} {{index .Config.Labels "com.docker.compose.project"}}' plex 2>/dev/null) == "true mediastack" ]]; then
+  if [[ $proc == Plex* ]] && docker ps --filter label=com.docker.compose.service=plex --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null |
+       while read -r pr; do our_project "$pr" && echo ours; done | grep -q ours; then
     return 0
   fi
   echo "program \"${proc:-unknown}\""
@@ -996,8 +1016,8 @@ prepare_folders() {
   # Pre-seed API keys so every app knows the others' keys before first boot.
   local app port name
   # Internal container ports (fixed); host ports are only in the compose mapping.
-  local arrs="radarr:7878:Radarr sonarr:8989:Sonarr prowlarr:9696:Prowlarr"
-  want lidarr && arrs+=" lidarr:8686:Lidarr"
+  local arrs="radarr:$I_RADARR:Radarr sonarr:$I_SONARR:Sonarr prowlarr:$I_PROWLARR:Prowlarr"
+  want lidarr && arrs+=" lidarr:$I_LIDARR:Lidarr"
   for app in $arrs; do
     IFS=: read -r name port _ <<<"$app"
     local f="$INSTALL_DIR/config/$name/config.xml"
@@ -1039,7 +1059,7 @@ EOF
   fi
 
   chown -R "$PUID:$PGID" "$INSTALL_DIR/config" "$DATA_DIR"
-  chown -R 1000:1000 "$INSTALL_DIR/config/seerr"   # Seerr's image always runs as uid 1000
+  chown -R "$SEERR_UID:$SEERR_UID" "$INSTALL_DIR/config/seerr"
   chmod -R u+rwX,g+rwX "$DATA_DIR"
 }
 
@@ -1256,10 +1276,10 @@ start_stack() {
   local n
   n=$(dc config --services | wc -l)
   info "Downloading $n app images in parallel (~2-3 GB on a first install)"
-  run "Downloading images" dc --progress plain pull
+  pull_images
   # Seerr boots now too: it creates its default settings while the others start,
   # and gets Radarr/Sonarr injected in the wiring step.
-  run "Starting $n containers" dc --progress plain up -d --remove-orphans
+  deploy_stack "$n"
 
   RADARR_URL="http://localhost:$P_RADARR"; SONARR_URL="http://localhost:$P_SONARR"; PROWLARR_URL="http://localhost:$P_PROWLARR"
   RADARR_KEY=$(xml_key "$INSTALL_DIR/config/radarr/config.xml")
@@ -1362,7 +1382,7 @@ sab_setup() {
     curl -sS "$CURL_FAIL" -G "$s" --data "mode=set_config" --data "section=misc" --data "keyword=$k" \
       --data-urlencode "value=$v" --data "apikey=$SAB_KEY" --data "output=json" >/dev/null
   done
-  dc restart sabnzbd
+  svc_restart sabnzbd
   wait_for SABnzbd "http://localhost:$P_SAB/" 120
 
   # Category folders. On a brand-new SABnzbd, first-boot initialisation can
@@ -1388,11 +1408,11 @@ wire_radarr() {
   add_root_folder "$RADARR_URL" "$RADARR_KEY" /data/Movies
   if want qbittorrent; then
     add_from_schema "$RADARR_URL" v3 "$RADARR_KEY" downloadclient QBittorrent qBittorrent \
-      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg port "$P_QBIT" '{host:"qbittorrent", port:($port|tonumber), username:$u, password:$p, movieCategory:"movies"}')"
+      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg host "$H_QBIT" --arg port "$P_QBIT" '{host:$host, port:($port|tonumber), username:$u, password:$p, movieCategory:"movies"}')"
   fi
   if want sabnzbd; then
     add_from_schema "$RADARR_URL" v3 "$RADARR_KEY" downloadclient Sabnzbd SABnzbd \
-      "$(jq -n --arg k "$SAB_KEY" '{host:"sabnzbd", port:8080, apiKey:$k, movieCategory:"movies"}')"
+      "$(jq -n --arg k "$SAB_KEY" --arg host "$H_SAB" --arg port "$I_SAB" '{host:$host, port:($port|tonumber), apiKey:$k, movieCategory:"movies"}')"
   fi
 }
 
@@ -1400,19 +1420,19 @@ wire_sonarr() {
   add_root_folder "$SONARR_URL" "$SONARR_KEY" /data/TV_Shows
   if want qbittorrent; then
     add_from_schema "$SONARR_URL" v3 "$SONARR_KEY" downloadclient QBittorrent qBittorrent \
-      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg port "$P_QBIT" '{host:"qbittorrent", port:($port|tonumber), username:$u, password:$p, tvCategory:"tv"}')"
+      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg host "$H_QBIT" --arg port "$P_QBIT" '{host:$host, port:($port|tonumber), username:$u, password:$p, tvCategory:"tv"}')"
   fi
   if want sabnzbd; then
     add_from_schema "$SONARR_URL" v3 "$SONARR_KEY" downloadclient Sabnzbd SABnzbd \
-      "$(jq -n --arg k "$SAB_KEY" '{host:"sabnzbd", port:8080, apiKey:$k, tvCategory:"tv"}')"
+      "$(jq -n --arg k "$SAB_KEY" --arg host "$H_SAB" --arg port "$I_SAB" '{host:$host, port:($port|tonumber), apiKey:$k, tvCategory:"tv"}')"
   fi
 }
 
 wire_prowlarr() {
   add_from_schema "$PROWLARR_URL" v1 "$PROWLARR_KEY" applications Radarr Radarr \
-    "$(jq -n --arg k "$RADARR_KEY" '{prowlarrUrl:"http://prowlarr:9696", baseUrl:"http://radarr:7878", apiKey:$k}')" '.syncLevel = "fullSync"'
+    "$(jq -n --arg k "$RADARR_KEY" --arg p "http://$H_PROWLARR:$I_PROWLARR" --arg b "http://$H_RADARR:$I_RADARR" '{prowlarrUrl:$p, baseUrl:$b, apiKey:$k}')" '.syncLevel = "fullSync"'
   add_from_schema "$PROWLARR_URL" v1 "$PROWLARR_KEY" applications Sonarr Sonarr \
-    "$(jq -n --arg k "$SONARR_KEY" '{prowlarrUrl:"http://prowlarr:9696", baseUrl:"http://sonarr:8989", apiKey:$k}')" '.syncLevel = "fullSync"'
+    "$(jq -n --arg k "$SONARR_KEY" --arg p "http://$H_PROWLARR:$I_PROWLARR" --arg b "http://$H_SONARR:$I_SONARR" '{prowlarrUrl:$p, baseUrl:$b, apiKey:$k}')" '.syncLevel = "fullSync"'
 }
 
 wire_lidarr() {
@@ -1426,14 +1446,14 @@ wire_lidarr() {
   fi
   if want qbittorrent; then
     add_from_schema "$LIDARR_URL" v1 "$LIDARR_KEY" downloadclient QBittorrent qBittorrent \
-      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg port "$P_QBIT" '{host:"qbittorrent", port:($port|tonumber), username:$u, password:$p, musicCategory:"music"}')"
+      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg host "$H_QBIT" --arg port "$P_QBIT" '{host:$host, port:($port|tonumber), username:$u, password:$p, musicCategory:"music"}')"
   fi
   if want sabnzbd; then
     add_from_schema "$LIDARR_URL" v1 "$LIDARR_KEY" downloadclient Sabnzbd SABnzbd \
-      "$(jq -n --arg k "$SAB_KEY" '{host:"sabnzbd", port:8080, apiKey:$k, musicCategory:"music"}')"
+      "$(jq -n --arg k "$SAB_KEY" --arg host "$H_SAB" --arg port "$I_SAB" '{host:$host, port:($port|tonumber), apiKey:$k, musicCategory:"music"}')"
   fi
   add_from_schema "$PROWLARR_URL" v1 "$PROWLARR_KEY" applications Lidarr Lidarr \
-    "$(jq -n --arg k "$LIDARR_KEY" '{prowlarrUrl:"http://prowlarr:9696", baseUrl:"http://lidarr:8686", apiKey:$k}')" '.syncLevel = "fullSync"'
+    "$(jq -n --arg k "$LIDARR_KEY" --arg p "http://$H_PROWLARR:$I_PROWLARR" --arg b "http://$H_LIDARR:$I_LIDARR" '{prowlarrUrl:$p, baseUrl:$b, apiKey:$k}')" '.syncLevel = "fullSync"'
 }
 
 # Tdarr 3 (closed source) is driven through the same endpoints its web UI uses.
@@ -1499,9 +1519,9 @@ bazarr_setup() {
   # exactly like its own web UI.
   local form=(
     --data-urlencode "settings-general-use_radarr=true" --data-urlencode "settings-general-use_sonarr=true"
-    --data-urlencode "settings-radarr-ip=radarr" --data-urlencode "settings-radarr-port=7878"
+    --data-urlencode "settings-radarr-ip=$H_RADARR" --data-urlencode "settings-radarr-port=$I_RADARR"
     --data-urlencode "settings-radarr-apikey=$RADARR_KEY" --data-urlencode "settings-radarr-base_url=/"
-    --data-urlencode "settings-sonarr-ip=sonarr" --data-urlencode "settings-sonarr-port=8989"
+    --data-urlencode "settings-sonarr-ip=$H_SONARR" --data-urlencode "settings-sonarr-port=$I_SONARR"
     --data-urlencode "settings-sonarr-apikey=$SONARR_KEY" --data-urlencode "settings-sonarr-base_url=/"
     --data-urlencode "settings-auth-type=form" --data-urlencode "settings-auth-username=$APP_USER"
     --data-urlencode "settings-auth-password=$APP_PASS"
@@ -1533,49 +1553,50 @@ pick_profile() { # url key → "id<TAB>name", preferring HD-1080p
 seerr_setup() {
   local settings="$INSTALL_DIR/config/seerr/settings.json"
   if [[ -f $settings ]] && jq -e '(.radarr | length) > 0' "$settings" >/dev/null 2>&1; then
-    dc up -d seerr
+    svc_up seerr
     log "Seerr already has Radarr configured"; return 0
   fi
   # Let Seerr generate a complete default settings.json first: its migrations
   # expect every section to exist, so a hand-written partial file would crash it.
-  dc up -d seerr
+  svc_up seerr
   local i
   for i in $(seq 1 90); do jq -e '.main.apiKey' "$settings" >/dev/null 2>&1 && break; sleep 2; done
   jq -e '.main.apiKey' "$settings" >/dev/null 2>&1 || { echo "Seerr did not create settings.json"; return 1; }
   sleep 3
-  dc stop seerr
+  svc_stop seerr
 
   local rp sp
   rp=$(pick_profile "$RADARR_URL" "$RADARR_KEY"); sp=$(pick_profile "$SONARR_URL" "$SONARR_KEY")
   cp "$settings" "$settings.bak"
   jq --arg rk "$RADARR_KEY" --arg sk "$SONARR_KEY" --arg ip "$HOST_IP" --arg rport "$P_RADARR" --arg sport "$P_SONARR" \
+     --arg rh "$H_RADARR" --arg ri "$I_RADARR" --arg sh "$H_SONARR" --arg si "$I_SONARR" --arg jh "$H_JELLYFIN" --arg ji "$I_JELLYFIN" \
      --argjson rpid "${rp%%$'\t'*}" --arg rpn "${rp#*$'\t'}" \
      --argjson spid "${sp%%$'\t'*}" --arg spn "${sp#*$'\t'}" \
      --arg server "$SERVER" '
     .radarr = [{
-      id: 0, name: "Radarr", hostname: "radarr", port: 7878, apiKey: $rk, useSsl: false, baseUrl: "",
+      id: 0, name: "Radarr", hostname: $rh, port: ($ri | tonumber), apiKey: $rk, useSsl: false, baseUrl: "",
       activeProfileId: $rpid, activeProfileName: $rpn, activeDirectory: "/data/Movies",
       tags: [], is4k: false, isDefault: true, externalUrl: "http://\($ip):\($rport)",
       syncEnabled: true, preventSearch: false, tagRequests: false, overrideRule: [],
       minimumAvailability: "released"
     }]
     | .sonarr = [{
-      id: 0, name: "Sonarr", hostname: "sonarr", port: 8989, apiKey: $sk, useSsl: false, baseUrl: "",
+      id: 0, name: "Sonarr", hostname: $sh, port: ($si | tonumber), apiKey: $sk, useSsl: false, baseUrl: "",
       activeProfileId: $spid, activeProfileName: $spn, activeDirectory: "/data/TV_Shows",
       activeAnimeProfileId: $spid, activeAnimeProfileName: $spn, activeAnimeDirectory: "/data/TV_Shows",
       tags: [], animeTags: [], is4k: false, isDefault: true, externalUrl: "http://\($ip):\($sport)",
       syncEnabled: true, preventSearch: false, tagRequests: false, overrideRule: [],
       seriesType: "standard", animeSeriesType: "anime", enableSeasonFolders: true, monitorNewItems: "all"
     }]
-    | if ($server == "jellyfin" or $server == "both") then .jellyfin.ip = "jellyfin" | .jellyfin.port = 8096 else . end
+    | if ($server == "jellyfin" or $server == "both") then .jellyfin.ip = $jh | .jellyfin.port = ($ji | tonumber) else . end
     | if ($server == "plex" or $server == "both" or $server == "none") then .plex.ip = $ip | .plex.port = 32400 else . end
   ' "$settings.bak" >"$settings"
-  chown 1000:1000 "$settings"
+  chown "$SEERR_UID:$SEERR_UID" "$settings"
 
-  dc start seerr
+  svc_start seerr
   if ! wait_for Seerr "http://localhost:$P_SEERR/api/v1/status" 120; then
     echo "Seerr failed to start with the pre-configured settings; restoring defaults"
-    dc stop seerr; cp "$settings.bak" "$settings"; chown 1000:1000 "$settings"; dc start seerr
+    svc_stop seerr; cp "$settings.bak" "$settings"; chown "$SEERR_UID:$SEERR_UID" "$settings"; svc_start seerr
     touch "$INSTALL_DIR/.seerr_manual"
   fi
 }
@@ -1697,14 +1718,14 @@ summary() {
       "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_CYAN" "$C_RESET" "$C_CYAN" "$C_RESET"
   fi
   local seerr_srv
-  if [[ $SERVER == plex || $SERVER == none ]]; then seerr_srv="your Plex account"; else seerr_srv="Jellyfin (server URL: http://jellyfin:8096)"; fi
+  if [[ $SERVER == plex || $SERVER == none ]]; then seerr_srv="your Plex account"; else seerr_srv="Jellyfin (server URL: http://$H_JELLYFIN:$I_JELLYFIN)"; fi
   printf '    %s%d.%s %sSeerr%s → sign in with %s. Radarr & Sonarr are already connected.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$seerr_srv"
   want sabnzbd && printf '    %s%d.%s %sSABnzbd%s → add your usenet provider in the setup wizard.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET"
   want lidarr && printf '    %s%d.%s %sLidarr%s → ready; also add a Music library (%s/data/Music%s) in your media server.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_CYAN" "$C_RESET"
   want bazarr && printf '    %s%d.%s %sBazarr%s → Settings → Providers: pick subtitle sites (e.g. OpenSubtitles.com needs a free account).\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET"
   want tdarr && printf '    %s%d.%s %sTdarr%s → Movies & TV_Shows libraries are ready with transcoding %sOFF%s. Pick a Flow, then turn on Transcodes.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET"
 
-  printf '\n    %sManage:%s cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"
+  manage_hint
   printf '    %sLog:%s    %s\n' "$C_GRAY" "$C_RESET" "$LOG_FILE"
   local t=$((SECONDS - START_TIME))
   printf '    %sTime:%s   %dm %02ds\n\n' "$C_GRAY" "$C_RESET" $((t / 60)) $((t % 60))
@@ -1755,4 +1776,5 @@ main() {
   log "install finished"
 }
 
-main "$@"
+# The TrueNAS script sources this file as a library (SHL_LIBRARY=1) and runs its own main.
+[[ ${SHL_LIBRARY:-0} == 1 ]] || main "$@"
