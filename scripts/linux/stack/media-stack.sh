@@ -57,7 +57,14 @@ CURL_FAIL=--fail
 TOTAL_STEPS=10
 CURRENT_STEP="starting"
 
-log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >>"$LOG_FILE"; }
+# Logs may be attached to public GitHub issues: secrets are masked, colours stripped.
+log() {
+  local m="$*" secret
+  for secret in "${APP_PASS:-}" "${RADARR_KEY:-}" "${SONARR_KEY:-}" "${PROWLARR_KEY:-}" "${SAB_KEY:-}"; do
+    [[ ${#secret} -ge 6 ]] && m=${m//"$secret"/***}
+  done
+  printf '[%s] %s\n' "$(date +%H:%M:%S)" "$(sed -E 's/\x1b\[[0-9;]*m//g' <<<"$m")" >>"$LOG_FILE"
+}
 say()  { printf '%s\n' "$*"; log "$*"; }
 ok()   { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; log "OK   $*"; }
 info() { printf '  %s›%s %s\n' "$C_CYAN" "$C_RESET" "$*"; log "INFO $*"; }
@@ -91,31 +98,59 @@ step() {
   log "════ STEP $STEP/$TOTAL_STEPS: $1"
 }
 
-# run "message" command [args...]: output goes to the log, spinner on screen.
+LIVE_LINES=6   # how many lines of live output to show under a running step
+
+# Clean a chunk of command output for display: carriage-return progress bars
+# become separate lines, colour codes go, blank lines go.
+clean_output() { tr '\r' '\n' | sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g; /^[[:space:]]*$/d'; }
+
+# Live view: spinner + elapsed time, with the last few output lines scrolling
+# underneath. The window is erased when the step finishes.
+live_view() { # live_view pid "message" log-offset
+  local pid=$1 msg=$2 off=$3 frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0 start=$SECONDS drawn=0 cols n k l
+  local -a lines
+  cols=$(tput cols 2>/dev/null || echo 100); (( cols >= 40 )) || cols=100
+  printf '\e[?25l'
+  while kill -0 "$pid" 2>/dev/null; do
+    mapfile -t lines < <(tail -c +"$off" "$LOG_FILE" 2>/dev/null | clean_output | tail -n "$LIVE_LINES")
+    (( drawn )) && printf '\e[%dA' "$drawn"
+    printf '\r\e[2K  %s%s%s %s %s%ss%s\n' "$C_CYAN" "${frames:i++%10:1}" "$C_RESET" "$msg" "$C_GRAY" "$((SECONDS - start))" "$C_RESET"
+    n=1
+    for l in "${lines[@]}"; do
+      printf '\e[2K    %s│ %s%s\n' "$C_GRAY" "${l:0:$((cols - 8))}" "$C_RESET"
+      n=$((n + 1))
+    done
+    for (( k = n; k < drawn; k++ )); do printf '\e[2K\n'; done
+    (( n > drawn )) && drawn=$n
+    sleep 0.2
+  done
+  # Erase the window and leave the cursor where it started.
+  printf '\e[%dA' "$drawn"
+  for (( k = 0; k < drawn; k++ )); do printf '\e[2K\n'; done
+  printf '\e[%dA\e[?25h' "$drawn"
+}
+
+# run "message" command [args...]
+#  · terminal: live view of the command's output while it runs
+#  · no terminal (CI, ssh without -t): output is streamed, indented
+#  Everything is also written to the log file.
 run() {
   local msg=$1; shift
   LAST_RUN="$msg"
   log "\$ $*"
+  local rc=0
   if (( IS_TTY )); then
+    local off
+    off=$(( $(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0) + 1 ))
     ( trap - ERR; "$@" ) >>"$LOG_FILE" 2>&1 &
-    local pid=$! frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' i=0 start=$SECONDS
-    while kill -0 "$pid" 2>/dev/null; do
-      printf '\r  %s%s%s %s %s(%ss)%s ' "$C_CYAN" "${frames:i++%10:1}" "$C_RESET" "$msg" "$C_GRAY" "$((SECONDS - start))" "$C_RESET"
-      sleep 0.1
-    done
-    printf '\r\e[2K'
-    if wait "$pid"; then ok "$msg"; else
-      local rc=$?
-      err "$msg (exit $rc)"
-      return "$rc"
-    fi
+    local pid=$!
+    live_view "$pid" "$msg" "$off"
+    wait "$pid" || rc=$?
   else
-    if ( trap - ERR; "$@" ) >>"$LOG_FILE" 2>&1; then ok "$msg"; else
-      local rc=$?
-      err "$msg (exit $rc)"
-      return "$rc"
-    fi
+    printf '  %s›%s %s\n' "$C_CYAN" "$C_RESET" "$msg"
+    ( trap - ERR; set -o pipefail; "$@" 2>&1 | tee -a "$LOG_FILE" | clean_output | sed 's/^/    │ /' ) || rc=$?
   fi
+  if (( rc == 0 )); then ok "$msg"; else err "$msg (exit $rc)"; return "$rc"; fi
 }
 
 on_error() {
@@ -271,6 +306,7 @@ wait_for() { # wait_for "name" url [timeout] [extra curl args...]
   while (( SECONDS - start < timeout )); do
     code=$(http_code "$@" "$url")
     [[ $code =~ ^(200|30[1-8]|401|403)$ ]] && { log "$name ready ($code) after $((SECONDS - start))s"; return 0; }
+    echo "$name is starting up… (HTTP ${code:-000}, $((SECONDS - start))s / ${timeout}s)"
     sleep 2
   done
   log "$name not ready after ${timeout}s (last HTTP $code) at $url"
@@ -340,6 +376,46 @@ menu_index() { # menu_index value option1 option2 ... → 1-based index (1 if no
   echo 1
 }
 
+# One login shared by Radarr, Sonarr, Prowlarr, qBittorrent and SABnzbd.
+ask_credentials() {
+  local interactive=0
+  (( ! ASSUME_YES )) && has_tty && interactive=1
+
+  if (( interactive )); then
+    printf '\n  %sLogin for your apps%s %s(Radarr, Sonarr, Prowlarr, qBittorrent, SABnzbd)%s\n' \
+      "$C_BOLD" "$C_RESET" "$C_GRAY" "$C_RESET" >/dev/tty
+  fi
+  while [[ -z $APP_USER ]] || [[ ! $APP_USER =~ ^[A-Za-z0-9._-]{3,32}$ ]]; do
+    [[ -n $APP_USER ]] && warn "Username must be 3-32 characters: letters, numbers, . _ -"
+    (( interactive )) || { APP_USER=${APP_USER:-admin}; break; }
+    APP_USER=$(ask "Username" "admin")
+  done
+
+  if [[ -z $APP_PASS ]] && (( interactive )); then
+    case $(menu "Password for '$APP_USER'" 1 \
+      "Auto-generate|a strong random password, shown now and saved for you" \
+      "Type my own|at least 8 characters") in
+      2)
+        while :; do
+          APP_PASS=$(ask_secret "Password:")
+          if (( ${#APP_PASS} < 8 )); then warn "Use at least 8 characters."; continue; fi
+          [[ $(ask_secret "Confirm password:") == "$APP_PASS" ]] && break
+          warn "Passwords didn't match, try again."
+        done
+        ;;
+    esac
+  fi
+  if [[ -z $APP_PASS ]]; then
+    # Runs before dependencies are installed, so plain coreutils only (fixed-size reads: no SIGPIPE under pipefail).
+    APP_PASS=$(head -c 96 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-16)
+    GENERATED_PASS=1
+    # Straight to the screen (not via ok/log) so the password never lands in the log.
+    printf '  %s✓%s Generated password: %s%s%s  %s(also saved to %s/credentials.txt)%s\n' \
+      "$C_GREEN" "$C_RESET" "$C_BOLD" "$APP_PASS" "$C_RESET" "$C_GRAY" "$INSTALL_DIR" "$C_RESET"
+    log "OK   Generated a random password"
+  fi
+}
+
 choose_options() {
   step "Choose your stack"
 
@@ -385,20 +461,7 @@ choose_options() {
     APP_PASS=$(sed -n 's/^APP_PASS=//p' "$INSTALL_DIR/.secrets")
     info "Existing install found: reusing login '$APP_USER'"
   else
-    [[ -z $APP_USER ]] && APP_USER=$(ask "Username for your apps (Radarr, Sonarr, Prowlarr, downloaders)" "admin")
-    if [[ -z $APP_PASS ]] && (( ! ASSUME_YES )) && has_tty; then
-      while :; do
-        APP_PASS=$(ask_secret "Password (blank = generate one for me):")
-        [[ -z $APP_PASS ]] && break
-        if (( ${#APP_PASS} < 8 )); then warn "Use at least 8 characters."; continue; fi
-        [[ $(ask_secret "Confirm password:") == "$APP_PASS" ]] && break
-        warn "Passwords didn't match, try again."
-      done
-    fi
-    if [[ -z $APP_PASS ]]; then
-      APP_PASS=$(gen_secret urlsafe 12)
-      GENERATED_PASS=1
-    fi
+    ask_credentials
   fi
   [[ $APP_USER =~ ^[A-Za-z0-9._-]{3,32}$ ]] || die "Username must be 3-32 characters: letters, numbers, . _ -"
 
@@ -821,15 +884,13 @@ EOF
 
 start_stack() {
   step "Downloading & starting containers"
-  info "First run downloads ~2-3 GB of images. This can take a few minutes."
-  local svc services
-  services=$(dc config --services)
-  for svc in $services; do
-    run "Pulling $svc" dc pull --quiet "$svc"
-  done
-  # Seerr starts later, once Radarr/Sonarr are configured.
-  # shellcheck disable=SC2046
-  run "Starting containers" dc up -d --remove-orphans $(grep -vx seerr <<<"$services")
+  local n
+  n=$(dc config --services | wc -l)
+  info "Downloading $n app images in parallel (~2-3 GB on a first install)"
+  run "Downloading images" dc --progress plain pull
+  # Seerr boots now too: it creates its default settings while the others start,
+  # and gets Radarr/Sonarr injected in the wiring step.
+  run "Starting $n containers" dc --progress plain up -d --remove-orphans
 
   RADARR_URL="http://localhost:$P_RADARR"; SONARR_URL="http://localhost:$P_SONARR"; PROWLARR_URL="http://localhost:$P_PROWLARR"
   RADARR_KEY=$(xml_key "$INSTALL_DIR/config/radarr/config.xml")
@@ -1115,7 +1176,9 @@ summary() {
   want sabnzbd && printf '    %s%d.%s %sSABnzbd%s → add your usenet provider in the setup wizard.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET"
 
   printf '\n    %sManage:%s cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"
-  printf '    %sLog:%s    %s\n\n' "$C_GRAY" "$C_RESET" "$LOG_FILE"
+  printf '    %sLog:%s    %s\n' "$C_GRAY" "$C_RESET" "$LOG_FILE"
+  local t=$((SECONDS - START_TIME))
+  printf '    %sTime:%s   %dm %02ds\n\n' "$C_GRAY" "$C_RESET" $((t / 60)) $((t % 60))
 }
 
 uninstall() {
@@ -1145,6 +1208,8 @@ main() {
 
   if (( UNINSTALL )); then uninstall; exit 0; fi
 
+  (( IS_TTY )) && trap 'printf "\e[?25h"' EXIT   # never leave the cursor hidden
+  START_TIME=$SECONDS
   banner
   [[ -n ${EXTRAS_IGNORED:-} ]] && warn "--extras=$EXTRAS_IGNORED isn't supported by this version yet; ignoring."
   preflight
