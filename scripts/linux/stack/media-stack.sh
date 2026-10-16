@@ -321,10 +321,16 @@ preflight() {
   fi
   ok "Apps will run as $OWNER (PUID=$PUID PGID=$PGID)"
 
-  if [[ -e /dev/dri ]]; then
-    HAS_DRI=1; ok "GPU found (/dev/dri): hardware transcoding enabled"
+  # A render node (renderD*) means a usable GPU; VMs often expose only a
+  # virtual display card (card0), which can't transcode.
+  if compgen -G '/dev/dri/renderD*' >/dev/null; then
+    HAS_DRI=1; ok "GPU found ($(compgen -G '/dev/dri/renderD*' | head -n1)): hardware transcoding enabled"
   else
-    HAS_DRI=0; info "No /dev/dri GPU found: media servers will use CPU transcoding"
+    HAS_DRI=0; info "No GPU render device found: media servers will use CPU transcoding"
+  fi
+
+  if (( (mem_mb < 4096) )) && (( $(nproc) < 2 )); then
+    warn "1 CPU / <4 GB RAM: fine for streaming, but avoid running both media servers plus transcoding."
   fi
 }
 
@@ -427,6 +433,46 @@ choose_options() {
     exit 0
   fi
   confirm "Install now?" || { info "Cancelled. Nothing was changed."; exit 0; }
+}
+
+stack_images() { # images this selection needs
+  local imgs=("$LSIO/radarr:latest" "$LSIO/sonarr:latest" "$LSIO/prowlarr:latest" "$SEERR_IMAGE")
+  want jellyfin && imgs+=("$LSIO/jellyfin:latest")
+  want plex && imgs+=("$LSIO/plex:latest")
+  want qbittorrent && imgs+=("$LSIO/qbittorrent:latest")
+  want sabnzbd && imgs+=("$LSIO/sabnzbd:latest")
+  printf '%s\n' "${imgs[@]}"
+}
+
+check_disk() {
+  local root free_gb missing=0 need img
+  root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+  [[ -d $root ]] || root=/var/lib
+  free_gb=$(df -Pk "$root" | awk 'NR==2 {printf "%.1f", $4/1048576}')
+  for img in $(stack_images); do docker image inspect "$img" >/dev/null 2>&1 || missing=$((missing + 1)); done
+  # ~0.6 GB per image still to download, plus 1 GB headroom for app databases.
+  need=$(awk -v m="$missing" 'BEGIN {printf "%.1f", m * 0.6 + 1}')
+  log "disk: ${free_gb} GB free at $root, $missing images to pull, need ~${need} GB"
+  if awk -v f="$free_gb" -v n="$need" 'BEGIN {exit !(f < n)}'; then
+    lvm_hint
+    die "Only ${free_gb} GB free for Docker, ~${need} GB needed ($missing images to download)."
+  elif awk -v f="$free_gb" -v n="$need" 'BEGIN {exit !(f < n + 3)}'; then
+    warn "Low disk: ${free_gb} GB free for Docker (~${need} GB needed now)."
+    lvm_hint
+  else
+    ok "Disk: ${free_gb} GB free for Docker"
+  fi
+}
+
+# Ubuntu's installer often gives the root LV only half the disk. Point that out.
+lvm_hint() {
+  local dev vfree
+  dev=$(findmnt -no SOURCE / 2>/dev/null) || return 0
+  [[ $dev == /dev/mapper/* ]] || return 0
+  vfree=$(lvs --noheadings -o vg_free --units g --nosuffix "$dev" 2>/dev/null | tr -d ' ') || return 0
+  [[ -n $vfree ]] && awk -v v="$vfree" 'BEGIN {exit !(v >= 1)}' || return 0
+  info "Your volume group has ${vfree%.*} GB unallocated. Give it to / with:"
+  info "  ${C_CYAN}sudo lvextend -r -l +100%FREE $dev${C_RESET}"
 }
 
 check_ports() {
@@ -536,6 +582,7 @@ install_docker() {
     usermod -aG docker "$SUDO_USER" && ok "Added $SUDO_USER to the docker group (log out/in to use docker without sudo)"
   fi
   check_ports
+  check_disk
 }
 
 arr_config_xml() { # arr_config_xml port name apikey
@@ -865,12 +912,25 @@ sab_setup() {
     curl -sS "$CURL_FAIL" -G "$s" --data "mode=set_config" --data "section=misc" --data "keyword=$k" \
       --data-urlencode "value=$v" --data "apikey=$SAB_KEY" --data "output=json" >/dev/null
   done
-  for k in movies tv; do
-    curl -sS "$CURL_FAIL" -G "$s" --data "mode=set_config" --data "section=categories" --data "keyword=$k" \
-      --data "dir=$k" --data "apikey=$SAB_KEY" --data "output=json" >/dev/null
-  done
   dc restart sabnzbd
   wait_for SABnzbd "http://localhost:$P_SAB/" 120
+
+  # Category folders. On a brand-new SABnzbd, first-boot initialisation can
+  # overwrite categories set too early, so apply after the restart, read them
+  # back and retry until they stick.
+  local try missing
+  for try in 1 2 3 4 5 6; do
+    for k in movies tv; do
+      curl -sS "$CURL_FAIL" -G "$s" --data "mode=set_config" --data "section=categories" --data "keyword=$k" \
+        --data "dir=$k" --data "apikey=$SAB_KEY" --data "output=json" >/dev/null
+    done
+    sleep 3
+    missing=$(curl -sS -G "$s" --data "mode=get_config" --data "section=categories" --data "apikey=$SAB_KEY" --data "output=json" |
+      jq -r '[.config.categories[] | select((.name == "movies" or .name == "tv") and .dir != .name)] | length')
+    [[ $missing == 0 ]] && { echo "SABnzbd categories set (attempt $try)"; return 0; }
+    echo "SABnzbd categories not applied yet (attempt $try), retrying"
+  done
+  echo "SABnzbd categories could not be set"; return 1
 }
 
 wire_radarr() {
