@@ -19,7 +19,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts/linux/stack/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
@@ -43,6 +43,11 @@ LSIO="lscr.io/linuxserver"
 # Host ports
 P_JELLYFIN=8096; P_PLEX=32400; P_QBIT=8080; P_TORRENT=6881; P_SAB=8085
 P_RADARR=7878; P_SONARR=8989; P_PROWLARR=9696; P_SEERR=5055
+P_LIDARR=8686; P_BAZARR=6767; P_TDARR=8265; P_TDARR_SRV=8266
+TDARR_IMAGE="ghcr.io/haveagitgat/tdarr:latest"
+EXTRAS=""          # comma list of: lidarr, bazarr, tdarr
+EXTRAS_SET=0
+SUB_LANGS=""       # Bazarr subtitle languages, e.g. en,es
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -63,7 +68,7 @@ CURRENT_STEP="starting"
 # Logs may be attached to public GitHub issues: secrets are masked, colours stripped.
 log() {
   local m="$*" secret
-  for secret in "${APP_PASS:-}" "${RADARR_KEY:-}" "${SONARR_KEY:-}" "${PROWLARR_KEY:-}" "${SAB_KEY:-}"; do
+  for secret in "${APP_PASS:-}" "${RADARR_KEY:-}" "${SONARR_KEY:-}" "${PROWLARR_KEY:-}" "${SAB_KEY:-}" "${LIDARR_KEY:-}" "${BAZARR_KEY:-}"; do
     [[ ${#secret} -ge 6 ]] && m=${m//"$secret"/***}
   done
   printf '[%s] %s\n' "$(date +%H:%M:%S)" "$(sed -E 's/\x1b\[[0-9;]*m//g' <<<"$m")" >>"$LOG_FILE"
@@ -259,6 +264,8 @@ Usage: sudo bash media-stack.sh [options]
   --install-dir=PATH                 Compose file + app configs (default $INSTALL_DIR)
   --username=NAME                    Login for Radarr/Sonarr/Prowlarr/downloaders
   --password=PASS                    Password for those apps (generated if omitted)
+  --extras=lidarr,bazarr,tdarr       Optional apps (or "none")
+  --subtitle-langs=en,es             Bazarr subtitle languages (default en)
   --plex-claim=TOKEN                 Claim token from https://plex.tv/claim (optional)
   -y, --yes                          Non-interactive, accept defaults
   --dry-run                          Show what would be installed, change nothing
@@ -278,7 +285,8 @@ parse_args() {
       --username=*) APP_USER=${arg#*=} ;;
       --password=*) APP_PASS=${arg#*=} ;;
       --plex-claim=*) PLEX_CLAIM=${arg#*=} ;;
-      --extras=*) EXTRAS_IGNORED=${arg#*=} ;;
+      --extras=*) EXTRAS=${arg#*=}; EXTRAS_SET=1 ;;
+      --subtitle-langs=*) SUB_LANGS=${arg#*=} ;;
       -y|--yes) ASSUME_YES=1 ;;
       --dry-run) DRY_RUN=1 ;;
       --uninstall) UNINSTALL=1 ;;
@@ -297,6 +305,7 @@ was_installed() { # same as want(), against the previous run's choices
   case $1 in
     jellyfin|plex) [[ $PREV_SERVER == "$1" || $PREV_SERVER == both ]] ;;
     qbittorrent|sabnzbd) [[ $PREV_DOWNLOADER == "$1" || $PREV_DOWNLOADER == both ]] ;;
+    lidarr|bazarr|tdarr) [[ ,${PREV_EXTRAS:-}, == *,$1,* ]] ;;
   esac
 }
 
@@ -304,6 +313,7 @@ want() { # want jellyfin|plex|qbittorrent|sabnzbd
   case $1 in
     jellyfin|plex) [[ $SERVER == "$1" || $SERVER == both ]] ;;
     qbittorrent|sabnzbd) [[ $DOWNLOADER == "$1" || $DOWNLOADER == both ]] ;;
+    lidarr|bazarr|tdarr) [[ ,$EXTRAS, == *,$1,* ]] ;;
   esac
 }
 
@@ -410,7 +420,7 @@ ask_credentials() {
   (( ! ASSUME_YES )) && has_tty && interactive=1
 
   if (( interactive )); then
-    printf '\n  %sLogin for your apps%s %s(Radarr, Sonarr, Prowlarr, qBittorrent, SABnzbd)%s\n' \
+    printf '\n  %sLogin for your apps%s %s(one login for every app that has one: Radarr, Sonarr, Prowlarr, downloaders, extras)%s\n' \
       "$C_BOLD" "$C_RESET" "$C_GRAY" "$C_RESET" >/dev/tty
   fi
   while [[ -z $APP_USER ]] || [[ ! $APP_USER =~ ^[A-Za-z0-9._-]{3,32}$ ]]; do
@@ -444,14 +454,65 @@ ask_credentials() {
   fi
 }
 
+EXTRA_APPS=(lidarr bazarr tdarr)
+
+# Multi-select: type numbers ("1 3"), "a" for all, "n" for none, Enter = default.
+ask_extras() {
+  local def=$1 i ans pick picked=() n
+  if (( ASSUME_YES )) || ! has_tty; then EXTRAS=$def; return; fi
+  local defnums=""
+  for i in "${!EXTRA_APPS[@]}"; do [[ ,$def, == *,${EXTRA_APPS[i]},* ]] && defnums+="$((i + 1)) "; done
+  defnums=${defnums% }
+  {
+    printf '\n  %sExtras%s %s(optional, pick any)%s\n' "$C_BOLD" "$C_RESET" "$C_GRAY" "$C_RESET"
+    printf '    %s1)%s %-14s %s%s%s\n' "$C_GREEN" "$C_RESET" "Lidarr" "$C_GRAY" "music collection manager, wired like Radarr/Sonarr" "$C_RESET"
+    printf '    %s2)%s %-14s %s%s%s\n' "$C_GREEN" "$C_RESET" "Bazarr" "$C_GRAY" "automatic subtitles for your movies and shows" "$C_RESET"
+    printf '    %s3)%s %-14s %s%s%s\n' "$C_GREEN" "$C_RESET" "Tdarr" "$C_GRAY" "transcode / shrink your library (CPU heavy)" "$C_RESET"
+  } >/dev/tty
+  while :; do
+    printf '  %s›%s Numbers separated by spaces, a = all, n = none %s(default: %s)%s: ' \
+      "$C_CYAN" "$C_RESET" "$C_GRAY" "${defnums:-none}" "$C_RESET" >/dev/tty
+    IFS= read -r ans </dev/tty || true
+    ans=${ans:-${defnums:-n}}
+    picked=()
+    case ${ans,,} in
+      a|all) picked=("${EXTRA_APPS[@]}") ;;
+      n|none) ;;
+      *)
+        n=0
+        for pick in ${ans//,/ }; do
+          if [[ $pick =~ ^[1-3]$ ]]; then picked+=("${EXTRA_APPS[pick - 1]}"); else n=1; fi
+        done
+        if (( n )); then printf '    %sUse 1, 2 or 3 (e.g. "1 2"), a or n.%s\n' "$C_YELLOW" "$C_RESET" >/dev/tty; continue; fi
+        ;;
+    esac
+    break
+  done
+  EXTRAS=$(printf '%s\n' "${picked[@]}" | awk 'NF && !seen[$0]++' | paste -sd, -)
+}
+
+normalize_extras() { # drop unknown names (the website lists a few future extras)
+  local e out=()
+  [[ ${EXTRAS,,} == none ]] && { EXTRAS=""; return; }
+  for e in ${EXTRAS//,/ }; do
+    case $e in
+      lidarr|bazarr|tdarr) out+=("$e") ;;
+      *) warn "Extra '$e' isn't supported by this script yet; skipping it." ;;
+    esac
+  done
+  EXTRAS=$(printf '%s\n' "${out[@]}" | awk 'NF && !seen[$0]++' | paste -sd, -)
+}
+
 choose_options() {
   step "Choose your stack"
 
   # Re-run: default to what's installed now, so nothing gets removed by accident.
-  PREV_SERVER=""; PREV_DOWNLOADER=""
+  PREV_SERVER=""; PREV_DOWNLOADER=""; PREV_EXTRAS=""; local prev_langs=""
   if [[ -f $INSTALL_DIR/.env ]]; then
     PREV_SERVER=$(sed -n 's/^STACK_SERVER=//p' "$INSTALL_DIR/.env")
     PREV_DOWNLOADER=$(sed -n 's/^STACK_DOWNLOADER=//p' "$INSTALL_DIR/.env")
+    PREV_EXTRAS=$(sed -n 's/^STACK_EXTRAS=//p' "$INSTALL_DIR/.env")
+    prev_langs=$(sed -n 's/^STACK_SUB_LANGS=//p' "$INSTALL_DIR/.env")
     local prev_data
     prev_data=$(sed -n 's/^DATA_DIR=//p' "$INSTALL_DIR/.env")
     (( DATA_DIR_SET )) || DATA_DIR=${prev_data:-$DATA_DIR}
@@ -461,7 +522,7 @@ choose_options() {
       [[ $val =~ ^[0-9]+$ ]] && printf -v "$v" '%s' "$val"
     done
     [[ -z $SERVER && $PREV_SERVER == none ]] && (( ASSUME_YES )) && SERVER=none
-    [[ -n $PREV_SERVER ]] && info "Currently installed: ${PREV_SERVER} + ${PREV_DOWNLOADER} (shown as the defaults)"
+    [[ -n $PREV_SERVER ]] && info "Currently installed: ${PREV_SERVER} + ${PREV_DOWNLOADER}${PREV_EXTRAS:+ + ${PREV_EXTRAS//,/, }} (shown as the defaults)"
   fi
 
   if [[ -z $SERVER ]]; then
@@ -483,6 +544,18 @@ choose_options() {
     esac
   fi
   [[ $DOWNLOADER =~ ^(qbittorrent|sabnzbd|both)$ ]] || die "Invalid --downloader '$DOWNLOADER'."
+
+  (( EXTRAS_SET )) || ask_extras "$PREV_EXTRAS"
+  normalize_extras
+  if want tdarr && (( $(nproc) < 4 )); then
+    warn "Tdarr transcodes with your CPU/GPU. With $(nproc) CPU core(s) it will be slow and can starve the other apps."
+  fi
+
+  if want bazarr; then
+    [[ -z $SUB_LANGS ]] && SUB_LANGS=$(ask "Subtitle languages for Bazarr (2-letter codes, comma-separated)" "${prev_langs:-en}")
+    SUB_LANGS=${SUB_LANGS,,}; SUB_LANGS=${SUB_LANGS// /}
+    [[ $SUB_LANGS =~ ^[a-z]{2}(,[a-z]{2})*$ ]] || die "Subtitle languages must look like en or en,es (got '$SUB_LANGS')."
+  fi
 
   { printf '\n' >/dev/tty; } 2>/dev/null || true
   DATA_DIR=$(ask "Where should media + downloads live?" "$DATA_DIR")
@@ -509,15 +582,17 @@ choose_options() {
   local servers dls
   servers=$(want jellyfin && echo -n "Jellyfin "; want plex && echo -n "Plex"; true)
   dls=$(want qbittorrent && echo -n "qBittorrent "; want sabnzbd && echo -n "SABnzbd"; true)
+  local extras_txt
+  extras_txt=$(want lidarr && echo -n "Lidarr "; want bazarr && echo -n "Bazarr (subtitles: $SUB_LANGS) "; want tdarr && echo -n "Tdarr"; true)
   printf '    %-16s %s\n' "Media server" "$servers" "Downloads" "$dls" "Automation" "Seerr · Radarr · Sonarr · Prowlarr" \
-    "Media folder" "$DATA_DIR" "App configs" "$INSTALL_DIR" "Login" "$APP_USER"
-  log "Plan: server=$SERVER downloader=$DOWNLOADER data=$DATA_DIR install=$INSTALL_DIR user=$APP_USER"
+    "Extras" "${extras_txt:-none}" "Media folder" "$DATA_DIR" "App configs" "$INSTALL_DIR" "Login" "$APP_USER"
+  log "Plan: server=$SERVER downloader=$DOWNLOADER extras=${EXTRAS:-none} data=$DATA_DIR install=$INSTALL_DIR user=$APP_USER"
   printf '\n'
 
   # Warn before a re-run drops an app that's installed today (its config folder is kept).
   local removed=() app
   if [[ -n $PREV_SERVER ]]; then
-    for app in jellyfin plex qbittorrent sabnzbd; do
+    for app in jellyfin plex qbittorrent sabnzbd lidarr bazarr tdarr; do
       if was_installed "$app" && ! want "$app"; then removed+=("$app"); fi
     done
   fi
@@ -537,6 +612,9 @@ stack_images() { # images this selection needs
   local imgs=("$LSIO/radarr:latest" "$LSIO/sonarr:latest" "$LSIO/prowlarr:latest" "$SEERR_IMAGE")
   want jellyfin && imgs+=("$LSIO/jellyfin:latest")
   want plex && imgs+=("$LSIO/plex:latest")
+  want lidarr && imgs+=("$LSIO/lidarr:latest")
+  want bazarr && imgs+=("$LSIO/bazarr:latest")
+  want tdarr && imgs+=("$TDARR_IMAGE")
   want qbittorrent && imgs+=("$LSIO/qbittorrent:latest")
   want sabnzbd && imgs+=("$LSIO/sabnzbd:latest")
   printf '%s\n' "${imgs[@]}"
@@ -579,20 +657,22 @@ lvm_hint() {
 # fixed 32400), qBittorrent's web UI (same port inside and out, a linuxserver
 # CSRF requirement) and the torrent port (peers must reach the announced port).
 
-PORT_VARS=(P_JELLYFIN P_PLEX P_QBIT P_TORRENT P_SAB P_RADARR P_SONARR P_PROWLARR P_SEERR)
+PORT_VARS=(P_JELLYFIN P_PLEX P_QBIT P_TORRENT P_SAB P_RADARR P_SONARR P_PROWLARR P_SEERR P_LIDARR P_BAZARR P_TDARR P_TDARR_SRV)
 
 port_label() {
   case $1 in
     P_JELLYFIN) echo "Jellyfin" ;; P_PLEX) echo "Plex" ;; P_QBIT) echo "qBittorrent web UI" ;;
     P_TORRENT) echo "qBittorrent torrent traffic" ;; P_SAB) echo "SABnzbd" ;; P_RADARR) echo "Radarr" ;;
     P_SONARR) echo "Sonarr" ;; P_PROWLARR) echo "Prowlarr" ;; P_SEERR) echo "Seerr" ;;
+    P_LIDARR) echo "Lidarr" ;; P_BAZARR) echo "Bazarr" ;; P_TDARR) echo "Tdarr web UI" ;; P_TDARR_SRV) echo "Tdarr server (nodes)" ;;
   esac
 }
 
 port_needed() { # is this port variable used by the current selection?
   case $1 in
     P_JELLYFIN) want jellyfin ;; P_PLEX) want plex ;; P_QBIT|P_TORRENT) want qbittorrent ;;
-    P_SAB) want sabnzbd ;; *) return 0 ;;
+    P_SAB) want sabnzbd ;; P_LIDARR) want lidarr ;; P_BAZARR) want bazarr ;;
+    P_TDARR|P_TDARR_SRV) want tdarr ;; *) return 0 ;;
   esac
 }
 
@@ -831,19 +911,30 @@ prepare_folders() {
   want plex && mkdir -p "$INSTALL_DIR/config/plex"
   want qbittorrent && mkdir -p "$INSTALL_DIR/config/qbittorrent/qBittorrent"
   want sabnzbd && mkdir -p "$INSTALL_DIR/config/sabnzbd"
+  want lidarr && mkdir -p "$INSTALL_DIR/config/lidarr"
+  want bazarr && mkdir -p "$INSTALL_DIR/config/bazarr"
+  want tdarr && mkdir -p "$INSTALL_DIR"/config/tdarr/{server,configs,logs}
 
   # One /data tree shared by every container, so Radarr/Sonarr can hardlink
   # finished downloads into the library instead of copying them.
   mkdir -p "$DATA_DIR"/{Movies,TV_Shows,Active_Downloads}
   want qbittorrent && mkdir -p "$DATA_DIR"/Active_Downloads/torrents/{movies,tv,incomplete}
   want sabnzbd && mkdir -p "$DATA_DIR"/Active_Downloads/usenet/{incomplete,complete/movies,complete/tv}
-  ok "Media library:  $DATA_DIR/Movies  ·  $DATA_DIR/TV_Shows"
+  if want lidarr; then
+    mkdir -p "$DATA_DIR/Music"
+    want qbittorrent && mkdir -p "$DATA_DIR/Active_Downloads/torrents/music"
+    want sabnzbd && mkdir -p "$DATA_DIR/Active_Downloads/usenet/complete/music"
+  fi
+  want tdarr && mkdir -p "$DATA_DIR/Transcode_Cache"
+  ok "Media library:  $DATA_DIR/Movies  ·  $DATA_DIR/TV_Shows$(want lidarr && echo "  ·  $DATA_DIR/Music"; true)"
   ok "Downloads:      $DATA_DIR/Active_Downloads"
 
   # Pre-seed API keys so every app knows the others' keys before first boot.
   local app port name
   # Internal container ports (fixed); host ports are only in the compose mapping.
-  for app in radarr:7878:Radarr sonarr:8989:Sonarr prowlarr:9696:Prowlarr; do
+  local arrs="radarr:7878:Radarr sonarr:8989:Sonarr prowlarr:9696:Prowlarr"
+  want lidarr && arrs+=" lidarr:8686:Lidarr"
+  for app in $arrs; do
     IFS=: read -r name port _ <<<"$app"
     local f="$INSTALL_DIR/config/$name/config.xml"
     if [[ ! -f $f ]]; then
@@ -851,7 +942,7 @@ prepare_folders() {
       log "seeded $f"
     fi
   done
-  ok "API keys ready for Radarr, Sonarr, Prowlarr"
+  ok "API keys ready for Radarr, Sonarr, Prowlarr$(want lidarr && echo ", Lidarr"; true)"
 
   if want qbittorrent; then
     local qconf="$INSTALL_DIR/config/qbittorrent/qBittorrent/qBittorrent.conf"
@@ -900,6 +991,8 @@ DATA_DIR=$DATA_DIR
 PLEX_CLAIM=$PLEX_CLAIM
 STACK_SERVER=$SERVER
 STACK_DOWNLOADER=$DOWNLOADER
+STACK_EXTRAS=$EXTRAS
+STACK_SUB_LANGS=$SUB_LANGS
 EOF
   local v
   for v in "${PORT_VARS[@]}"; do echo "$v=${!v}" >>"$INSTALL_DIR/.env"; done
@@ -1018,6 +1111,63 @@ EOF
     volumes:
       - ./config/prowlarr:/config
 
+EOF
+    if want lidarr; then cat <<EOF
+  lidarr:
+    <<: *common
+    image: $LSIO/lidarr:latest
+    container_name: lidarr
+    ports:
+      - "$P_LIDARR:8686"
+    volumes:
+      - ./config/lidarr:/config
+      - \${DATA_DIR}:/data
+
+EOF
+    fi
+    if want bazarr; then cat <<EOF
+  bazarr:
+    <<: *common
+    image: $LSIO/bazarr:latest
+    container_name: bazarr
+    ports:
+      - "$P_BAZARR:6767"
+    volumes:
+      - ./config/bazarr:/config
+      - \${DATA_DIR}:/data
+
+EOF
+    fi
+    if want tdarr; then cat <<EOF
+  tdarr:
+    <<: *common
+    image: $TDARR_IMAGE
+    container_name: tdarr
+    environment:
+      PUID: \${PUID}
+      PGID: \${PGID}
+      TZ: \${TZ}
+      UMASK_SET: "002"
+      serverIP: 0.0.0.0
+      serverPort: "8266"
+      webUIPort: "8265"
+      internalNode: "true"
+      inContainer: "true"
+      ffmpegVersion: "7"
+      nodeName: InternalNode
+    ports:
+      - "$P_TDARR:8265"
+      - "$P_TDARR_SRV:8266"
+    volumes:
+      - ./config/tdarr/server:/app/server
+      - ./config/tdarr/configs:/app/configs
+      - ./config/tdarr/logs:/app/logs
+      - \${DATA_DIR}:/data
+      - \${DATA_DIR}/Transcode_Cache:/temp
+${gpu}
+EOF
+    fi
+    cat <<EOF
   seerr:
     image: $SEERR_IMAGE
     container_name: seerr
@@ -1060,6 +1210,13 @@ start_stack() {
   want sabnzbd && run "Waiting for SABnzbd" wait_for SABnzbd "http://localhost:$P_SAB/" 180
   want jellyfin && run "Waiting for Jellyfin" wait_for Jellyfin "http://localhost:$P_JELLYFIN/health" 240
   want plex && run "Waiting for Plex" wait_for Plex "http://localhost:$P_PLEX/identity" 240
+  if want lidarr; then
+    LIDARR_URL="http://localhost:$P_LIDARR"
+    LIDARR_KEY=$(xml_key "$INSTALL_DIR/config/lidarr/config.xml")
+    run "Waiting for Lidarr" wait_for Lidarr "$LIDARR_URL/api/v1/system/status" 240 -H "X-Api-Key: $LIDARR_KEY"
+  fi
+  want bazarr && run "Waiting for Bazarr" wait_for Bazarr "http://localhost:$P_BAZARR/" 240
+  want tdarr && run "Waiting for Tdarr" wait_for Tdarr "http://localhost:$P_TDARR/api/v2/status" 300
   return 0
 }
 
@@ -1116,8 +1273,9 @@ qbit_setup() {
   curl -sS -o /dev/null -c "$jar" -H "Referer: $q" --data-urlencode "username=$APP_USER" \
     --data-urlencode "password=$APP_PASS" "$q/api/v2/auth/login"
   grep -q QBT_SID "$jar" || { rm -f "$jar"; echo "qBittorrent login failed (wrong password?)"; return 1; }
-  local cat
-  for cat in movies tv; do
+  local cat cats="movies tv"
+  want lidarr && cats+=" music"
+  for cat in $cats; do
     curl -sS -b "$jar" -H "Referer: $q" --data "category=$cat" \
       --data-urlencode "savePath=/data/Active_Downloads/torrents/$cat" "$q/api/v2/torrents/createCategory" || true
     curl -sS -b "$jar" -H "Referer: $q" --data "category=$cat" \
@@ -1146,15 +1304,16 @@ sab_setup() {
   # Category folders. On a brand-new SABnzbd, first-boot initialisation can
   # overwrite categories set too early, so apply after the restart, read them
   # back and retry until they stick.
-  local try missing
+  local try missing cats="movies tv"
+  want lidarr && cats+=" music"
   for try in 1 2 3 4 5 6; do
-    for k in movies tv; do
+    for k in $cats; do
       curl -sS "$CURL_FAIL" -G "$s" --data "mode=set_config" --data "section=categories" --data "keyword=$k" \
         --data "dir=$k" --data "apikey=$SAB_KEY" --data "output=json" >/dev/null
     done
     sleep 3
     missing=$(curl -sS -G "$s" --data "mode=get_config" --data "section=categories" --data "apikey=$SAB_KEY" --data "output=json" |
-      jq -r '[.config.categories[] | select((.name == "movies" or .name == "tv") and .dir != .name)] | length')
+      jq -r --arg want "$cats" '($want | split(" ")) as $w | ($w - [.config.categories[] | select(.dir == .name) | .name]) | length')
     [[ $missing == 0 ]] && { echo "SABnzbd categories set (attempt $try)"; return 0; }
     echo "SABnzbd categories not applied yet (attempt $try), retrying"
   done
@@ -1190,6 +1349,116 @@ wire_prowlarr() {
     "$(jq -n --arg k "$RADARR_KEY" '{prowlarrUrl:"http://prowlarr:9696", baseUrl:"http://radarr:7878", apiKey:$k}')" '.syncLevel = "fullSync"'
   add_from_schema "$PROWLARR_URL" v1 "$PROWLARR_KEY" applications Sonarr Sonarr \
     "$(jq -n --arg k "$SONARR_KEY" '{prowlarrUrl:"http://prowlarr:9696", baseUrl:"http://sonarr:8989", apiKey:$k}')" '.syncLevel = "fullSync"'
+}
+
+wire_lidarr() {
+  local qp mp
+  qp=$(api GET "$LIDARR_URL/api/v1/qualityprofile" "$LIDARR_KEY" | jq -r '(map(select(.name == "Standard")) + .)[0].id')
+  mp=$(api GET "$LIDARR_URL/api/v1/metadataprofile" "$LIDARR_KEY" | jq -r '(map(select(.name == "Standard")) + .)[0].id')
+  if ! api GET "$LIDARR_URL/api/v1/rootfolder" "$LIDARR_KEY" | jq -e 'any(.[]; .path == "/data/Music")' >/dev/null; then
+    api POST "$LIDARR_URL/api/v1/rootfolder" "$LIDARR_KEY" "$(jq -n --argjson qp "$qp" --argjson mp "$mp" \
+      '{name: "Music", path: "/data/Music", defaultQualityProfileId: $qp, defaultMetadataProfileId: $mp,
+        defaultMonitorOption: "all", defaultNewItemMonitorOption: "all", defaultTags: []}')" >/dev/null
+  fi
+  if want qbittorrent; then
+    add_from_schema "$LIDARR_URL" v1 "$LIDARR_KEY" downloadclient QBittorrent qBittorrent \
+      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg port "$P_QBIT" '{host:"qbittorrent", port:($port|tonumber), username:$u, password:$p, musicCategory:"music"}')"
+  fi
+  if want sabnzbd; then
+    add_from_schema "$LIDARR_URL" v1 "$LIDARR_KEY" downloadclient Sabnzbd SABnzbd \
+      "$(jq -n --arg k "$SAB_KEY" '{host:"sabnzbd", port:8080, apiKey:$k, musicCategory:"music"}')"
+  fi
+  add_from_schema "$PROWLARR_URL" v1 "$PROWLARR_KEY" applications Lidarr Lidarr \
+    "$(jq -n --arg k "$LIDARR_KEY" '{prowlarrUrl:"http://prowlarr:9696", baseUrl:"http://lidarr:8686", apiKey:$k}')" '.syncLevel = "fullSync"'
+}
+
+# Tdarr 3 (closed source) is driven through the same endpoints its web UI uses.
+# Library defaults copied from Tdarr 3.01's own "new library" template, with
+# transcoding OFF: a fresh install must never start re-encoding someone's media.
+tdarr_library_template() {
+  cat <<'JSON'
+{"name":"","folder":"","foldersToIgnore":"","foldersToIgnoreCaseInsensitive":false,"folderWatchScanInterval":30,"scannerThreadCount":2,"cache":"","output":"","folderToFolderConversion":false,"folderToFolderConversionDeleteSource":false,"folderToFolderRecordHistory":true,"copyIfConditionsMet":false,"container":".mkv","containerFilter":"mkv,mp4,mov,m4v,mpg,mpeg,avi,flv,webm,wmv,vob,evo,iso,m2ts,ts","folderWatching":false,"useFsEvents":false,"scheduledScanFindNew":false,"processLibrary":true,"processTranscodes":true,"processHealthChecks":true,"scanOnStart":false,"exifToolScan":true,"mediaInfoScan":true,"ffprobeShowData":false,"isDirectoryLibrary":false,"closedCaptionScan":false,"scanButtons":true,"scanFound":"","navItemSelected":"navSourceFolder","pluginIDs":[],"pluginCommunity":true,"handbrake":true,"ffmpeg":false,"handbrakescan":true,"ffmpegscan":false,"preset":"-Z \"Very Fast 1080p30\"","decisionMaker":{"settingsPlugin":true,"settingsFlows":false,"settingsVideo":false,"videoExcludeSwitch":true,"video_codec_names_exclude":[{"codec":"hevc","checked":false},{"codec":"h264","checked":true}],"video_size_range_include":{"min":0,"max":100000},"video_height_range_include":{"min":0,"max":3000},"video_width_range_include":{"min":0,"max":4000},"settingsAudio":false,"audioExcludeSwitch":true,"audio_codec_names_exclude":[{"codec":"mp3","checked":true},{"codec":"aac","checked":false}],"audio_size_range_include":{"min":0,"max":10}},"schedule":[{"_id":"Sun:00-01","checked":true},{"_id":"Sun:01-02","checked":true},{"_id":"Sun:02-03","checked":true},{"_id":"Sun:03-04","checked":true},{"_id":"Sun:04-05","checked":true},{"_id":"Sun:05-06","checked":true},{"_id":"Sun:06-07","checked":true},{"_id":"Sun:07-08","checked":true},{"_id":"Sun:08-09","checked":true},{"_id":"Sun:09-10","checked":true},{"_id":"Sun:10-11","checked":true},{"_id":"Sun:11-12","checked":true},{"_id":"Sun:12-13","checked":true},{"_id":"Sun:13-14","checked":true},{"_id":"Sun:14-15","checked":true},{"_id":"Sun:15-16","checked":true},{"_id":"Sun:16-17","checked":true},{"_id":"Sun:17-18","checked":true},{"_id":"Sun:18-19","checked":true},{"_id":"Sun:19-20","checked":true},{"_id":"Sun:20-21","checked":true},{"_id":"Sun:21-22","checked":true},{"_id":"Sun:22-23","checked":true},{"_id":"Sun:23-00","checked":true},{"_id":"Mon:00-01","checked":true},{"_id":"Mon:01-02","checked":true},{"_id":"Mon:02-03","checked":true},{"_id":"Mon:03-04","checked":true},{"_id":"Mon:04-05","checked":true},{"_id":"Mon:05-06","checked":true},{"_id":"Mon:06-07","checked":true},{"_id":"Mon:07-08","checked":true},{"_id":"Mon:08-09","checked":true},{"_id":"Mon:09-10","checked":true},{"_id":"Mon:10-11","checked":true},{"_id":"Mon:11-12","checked":true},{"_id":"Mon:12-13","checked":true},{"_id":"Mon:13-14","checked":true},{"_id":"Mon:14-15","checked":true},{"_id":"Mon:15-16","checked":true},{"_id":"Mon:16-17","checked":true},{"_id":"Mon:17-18","checked":true},{"_id":"Mon:18-19","checked":true},{"_id":"Mon:19-20","checked":true},{"_id":"Mon:20-21","checked":true},{"_id":"Mon:21-22","checked":true},{"_id":"Mon:22-23","checked":true},{"_id":"Mon:23-00","checked":true},{"_id":"Tue:00-01","checked":true},{"_id":"Tue:01-02","checked":true},{"_id":"Tue:02-03","checked":true},{"_id":"Tue:03-04","checked":true},{"_id":"Tue:04-05","checked":true},{"_id":"Tue:05-06","checked":true},{"_id":"Tue:06-07","checked":true},{"_id":"Tue:07-08","checked":true},{"_id":"Tue:08-09","checked":true},{"_id":"Tue:09-10","checked":true},{"_id":"Tue:10-11","checked":true},{"_id":"Tue:11-12","checked":true},{"_id":"Tue:12-13","checked":true},{"_id":"Tue:13-14","checked":true},{"_id":"Tue:14-15","checked":true},{"_id":"Tue:15-16","checked":true},{"_id":"Tue:16-17","checked":true},{"_id":"Tue:17-18","checked":true},{"_id":"Tue:18-19","checked":true},{"_id":"Tue:19-20","checked":true},{"_id":"Tue:20-21","checked":true},{"_id":"Tue:21-22","checked":true},{"_id":"Tue:22-23","checked":true},{"_id":"Tue:23-00","checked":true},{"_id":"Wed:00-01","checked":true},{"_id":"Wed:01-02","checked":true},{"_id":"Wed:02-03","checked":true},{"_id":"Wed:03-04","checked":true},{"_id":"Wed:04-05","checked":true},{"_id":"Wed:05-06","checked":true},{"_id":"Wed:06-07","checked":true},{"_id":"Wed:07-08","checked":true},{"_id":"Wed:08-09","checked":true},{"_id":"Wed:09-10","checked":true},{"_id":"Wed:10-11","checked":true},{"_id":"Wed:11-12","checked":true},{"_id":"Wed:12-13","checked":true},{"_id":"Wed:13-14","checked":true},{"_id":"Wed:14-15","checked":true},{"_id":"Wed:15-16","checked":true},{"_id":"Wed:16-17","checked":true},{"_id":"Wed:17-18","checked":true},{"_id":"Wed:18-19","checked":true},{"_id":"Wed:19-20","checked":true},{"_id":"Wed:20-21","checked":true},{"_id":"Wed:21-22","checked":true},{"_id":"Wed:22-23","checked":true},{"_id":"Wed:23-00","checked":true},{"_id":"Thur:00-01","checked":true},{"_id":"Thur:01-02","checked":true},{"_id":"Thur:02-03","checked":true},{"_id":"Thur:03-04","checked":true},{"_id":"Thur:04-05","checked":true},{"_id":"Thur:05-06","checked":true},{"_id":"Thur:06-07","checked":true},{"_id":"Thur:07-08","checked":true},{"_id":"Thur:08-09","checked":true},{"_id":"Thur:09-10","checked":true},{"_id":"Thur:10-11","checked":true},{"_id":"Thur:11-12","checked":true},{"_id":"Thur:12-13","checked":true},{"_id":"Thur:13-14","checked":true},{"_id":"Thur:14-15","checked":true},{"_id":"Thur:15-16","checked":true},{"_id":"Thur:16-17","checked":true},{"_id":"Thur:17-18","checked":true},{"_id":"Thur:18-19","checked":true},{"_id":"Thur:19-20","checked":true},{"_id":"Thur:20-21","checked":true},{"_id":"Thur:21-22","checked":true},{"_id":"Thur:22-23","checked":true},{"_id":"Thur:23-00","checked":true},{"_id":"Fri:00-01","checked":true},{"_id":"Fri:01-02","checked":true},{"_id":"Fri:02-03","checked":true},{"_id":"Fri:03-04","checked":true},{"_id":"Fri:04-05","checked":true},{"_id":"Fri:05-06","checked":true},{"_id":"Fri:06-07","checked":true},{"_id":"Fri:07-08","checked":true},{"_id":"Fri:08-09","checked":true},{"_id":"Fri:09-10","checked":true},{"_id":"Fri:10-11","checked":true},{"_id":"Fri:11-12","checked":true},{"_id":"Fri:12-13","checked":true},{"_id":"Fri:13-14","checked":true},{"_id":"Fri:14-15","checked":true},{"_id":"Fri:15-16","checked":true},{"_id":"Fri:16-17","checked":true},{"_id":"Fri:17-18","checked":true},{"_id":"Fri:18-19","checked":true},{"_id":"Fri:19-20","checked":true},{"_id":"Fri:20-21","checked":true},{"_id":"Fri:21-22","checked":true},{"_id":"Fri:22-23","checked":true},{"_id":"Fri:23-00","checked":true},{"_id":"Sat:00-01","checked":true},{"_id":"Sat:01-02","checked":true},{"_id":"Sat:02-03","checked":true},{"_id":"Sat:03-04","checked":true},{"_id":"Sat:04-05","checked":true},{"_id":"Sat:05-06","checked":true},{"_id":"Sat:06-07","checked":true},{"_id":"Sat:07-08","checked":true},{"_id":"Sat:08-09","checked":true},{"_id":"Sat:09-10","checked":true},{"_id":"Sat:10-11","checked":true},{"_id":"Sat:11-12","checked":true},{"_id":"Sat:12-13","checked":true},{"_id":"Sat:13-14","checked":true},{"_id":"Sat:14-15","checked":true},{"_id":"Sat:15-16","checked":true},{"_id":"Sat:16-17","checked":true},{"_id":"Sat:17-18","checked":true},{"_id":"Sat:18-19","checked":true},{"_id":"Sat:19-20","checked":true},{"_id":"Sat:20-21","checked":true},{"_id":"Sat:21-22","checked":true},{"_id":"Sat:22-23","checked":true},{"_id":"Sat:23-00","checked":true}],"totalHealthCheckCount":0,"totalTranscodeCount":0,"sizeDiff":0,"holdNewFiles":false,"holdFor":3600,"holdForDisplayUnit":"hours","pluginStackOverview":true,"filterResolutionsSkip":"","filterCodecsSkip":"","filterContainersSkip":"","filterHardlinked":false,"processPluginsSequentially":true}
+JSON
+}
+
+tdarr_api() { # tdarr_api path json → body ; needs TDARR_TOKEN
+  curl -sS "$CURL_FAIL" -m 30 -X POST -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $TDARR_TOKEN" --data "$2" "http://localhost:$P_TDARR$1"
+}
+
+tdarr_setup() {
+  local t="http://localhost:$P_TDARR" creds res code
+  creds=$(jq -nc --arg u "$APP_USER" --arg p "$APP_PASS" '{username: $u, password: $p}')
+  # First run: Tdarr has no users yet, so register the shared login as its admin.
+  res=$(curl -s -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' --data "$creds" "$t/api/v2/public/auth/register")
+  code=${res##*$'\n'}
+  if [[ $code == 201 ]]; then
+    echo "Tdarr admin account created for $APP_USER"
+  else
+    res=$(curl -s -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' --data "$creds" "$t/api/v2/public/auth/login")
+    code=${res##*$'\n'}
+    [[ $code == 200 ]] || { echo "Tdarr login failed (HTTP $code): was its admin created with another password?"; return 1; }
+  fi
+  TDARR_TOKEN=$(jq -r '.token // empty' <<<"${res%$'\n'*}")
+  [[ -n $TDARR_TOKEN ]] || { echo "Tdarr returned no token"; return 1; }
+
+  local libs id name folder prio=0
+  libs=$(tdarr_api /api/v2/cruddb '{"data":{"collection":"LibrarySettingsJSONDB","mode":"getAll","docID":"","obj":{}}}')
+  prio=$(jq 'length' <<<"$libs")
+  for lib in "Movies:/data/Movies" "TV_Shows:/data/TV_Shows"; do
+    name=${lib%%:*}; folder=${lib#*:}
+    if jq -e --arg f "$folder" 'any(.[]; .folder == $f)' <<<"$libs" >/dev/null; then
+      echo "Tdarr library for $folder already exists, leaving it alone"; continue
+    fi
+    id="shl$name$RANDOM"
+    tdarr_api /api/v2/cruddb "$(tdarr_library_template | jq -c --arg id "$id" --arg n "$name" --arg f "$folder" --argjson prio "$prio" '
+      {data: {collection: "LibrarySettingsJSONDB", mode: "insert", docID: $id,
+        obj: (. + {_id: $id, name: $n, folder: $f, cache: "/temp", priority: $prio, createdAt: (now * 1000 | floor),
+          folderWatching: true, processTranscodes: false, processHealthChecks: true, pluginIDs: []}
+          | .decisionMaker.settingsPlugin = false | .decisionMaker.settingsFlows = true)}}')" >/dev/null
+    echo "Tdarr library $name → $folder (transcoding off)"
+    prio=$((prio + 1))
+  done
+}
+
+bazarr_key() { # auth.apikey from Bazarr's config.yaml
+  awk '/^auth:/ {a=1; next} a && /^[^ ]/ {a=0} a && /^  apikey:/ {gsub(/["\047]/, "", $2); print $2; exit}' \
+    "$INSTALL_DIR/config/bazarr/config/config.yaml" 2>/dev/null
+}
+
+bazarr_setup() {
+  local i b="http://localhost:$P_BAZARR"
+  for i in $(seq 1 60); do [[ -n $(bazarr_key) ]] && break; sleep 2; done
+  BAZARR_KEY=$(bazarr_key)
+  [[ -n $BAZARR_KEY ]] || { echo "Bazarr API key not found in config.yaml"; return 1; }
+  # Bazarr saves settings from form fields named settings-<section>-<key>,
+  # exactly like its own web UI.
+  local form=(
+    --data-urlencode "settings-general-use_radarr=true" --data-urlencode "settings-general-use_sonarr=true"
+    --data-urlencode "settings-radarr-ip=radarr" --data-urlencode "settings-radarr-port=7878"
+    --data-urlencode "settings-radarr-apikey=$RADARR_KEY" --data-urlencode "settings-radarr-base_url=/"
+    --data-urlencode "settings-sonarr-ip=sonarr" --data-urlencode "settings-sonarr-port=8989"
+    --data-urlencode "settings-sonarr-apikey=$SONARR_KEY" --data-urlencode "settings-sonarr-base_url=/"
+    --data-urlencode "settings-auth-type=form" --data-urlencode "settings-auth-username=$APP_USER"
+    --data-urlencode "settings-auth-password=$APP_PASS"
+  )
+  # Language profile: only on first setup, so a re-run never overwrites yours.
+  if [[ $(curl -s -H "X-API-KEY: $BAZARR_KEY" "$b/api/system/languages/profiles" | jq 'length' 2>/dev/null) == 0 ]]; then
+    local l profile
+    for l in ${SUB_LANGS//,/ }; do form+=(--data-urlencode "languages-enabled=$l"); done
+    profile=$(jq -nc --arg langs "$SUB_LANGS" '[{
+      profileId: 1, name: ("Default (" + $langs + ")"), cutoff: null, mustContain: [], mustNotContain: [],
+      originalFormat: false,
+      items: ($langs | split(",") | to_entries | map({id: (.key + 1), language: .value,
+        audio_exclude: "False", audio_only_include: "False", hi: "False", forced: "False"}))
+    }]')
+    form+=(--data-urlencode "languages-profiles=$profile"
+      --data-urlencode "settings-general-serie_default_enabled=true" --data-urlencode "settings-general-serie_default_profile=1"
+      --data-urlencode "settings-general-movie_default_enabled=true" --data-urlencode "settings-general-movie_default_profile=1")
+    echo "Creating subtitle profile for: $SUB_LANGS"
+  fi
+  curl -sS "$CURL_FAIL" -m 60 -X POST -H "X-API-KEY: $BAZARR_KEY" "${form[@]}" "$b/api/system/settings" >/dev/null
+  echo "Bazarr connected to Radarr + Sonarr"
 }
 
 pick_profile() { # url key → "id<TAB>name", preferring HD-1080p
@@ -1260,16 +1529,25 @@ wire_stack() {
   run "Radarr → /data/Movies + download clients" wire_radarr
   run "Sonarr → /data/TV_Shows + download clients" wire_sonarr
   run "Prowlarr → Radarr + Sonarr (indexer sync)" wire_prowlarr
+  if want lidarr; then
+    run "Securing Lidarr login" set_auth "$LIDARR_URL" v1 "$LIDARR_KEY"
+    run "Lidarr → /data/Music + download clients + Prowlarr" wire_lidarr
+  fi
+  if want bazarr; then
+    run "Bazarr → Radarr + Sonarr, subtitles: $SUB_LANGS" bazarr_setup
+    BAZARR_KEY=$(bazarr_key)
+  fi
+  want tdarr && run "Tdarr → admin login + Movies & TV libraries" tdarr_setup
   run "Seerr → Radarr + Sonarr" seerr_setup
   [[ -f $INSTALL_DIR/.seerr_manual ]] && warn "Seerr needs Radarr/Sonarr added by hand (Settings → Services). Keys are in credentials.txt."
   return 0
 }
 
-verify_arr() { # name url key
-  local r
-  r=$(api GET "$2/api/v3/downloadclient" "$3" | jq -r 'map(.name) | join(", ")')
+verify_arr() { # name url key [api version]
+  local r v=${4:-v3}
+  r=$(api GET "$2/api/$v/downloadclient" "$3" | jq -r 'map(.name) | join(", ")')
   if [[ -n $r ]]; then ok "$1 download clients: $r"; else warn "$1 has no download client"; fi
-  r=$(api GET "$2/api/v3/rootfolder" "$3" | jq -r 'map(.path) | join(", ")')
+  r=$(api GET "$2/api/$v/rootfolder" "$3" | jq -r 'map(.path) | join(", ")')
   if [[ -n $r ]]; then ok "$1 root folder: $r"; else warn "$1 has no root folder"; fi
 }
 
@@ -1281,6 +1559,15 @@ verify() {
   r=$(api GET "$PROWLARR_URL/api/v1/applications" "$PROWLARR_KEY" | jq -r 'map(.name) | join(", ")')
   if [[ -n $r ]]; then ok "Prowlarr syncs to: $r"; else warn "Prowlarr has no apps connected"; fi
   if [[ $(http_code "http://localhost:$P_SEERR/api/v1/status") == 200 ]]; then ok "Seerr is up"; else warn "Seerr is not responding yet"; fi
+  want lidarr && verify_arr Lidarr "$LIDARR_URL" "$LIDARR_KEY" v1
+  if want bazarr; then
+    r=$(curl -s -H "X-API-KEY: $BAZARR_KEY" "http://localhost:$P_BAZARR/api/system/settings" |
+      jq -r '[if .general.use_radarr then "Radarr" else empty end, if .general.use_sonarr then "Sonarr" else empty end] | join(" + ")' 2>/dev/null)
+    if [[ -n $r ]]; then ok "Bazarr watches: $r"; else warn "Bazarr isn't connected to Radarr/Sonarr"; fi
+  fi
+  if want tdarr; then
+    if [[ $(http_code "http://localhost:$P_TDARR/api/v2/status") == 200 ]]; then ok "Tdarr is up (internal node, login required)"; else warn "Tdarr is not responding yet"; fi
+  fi
   return 0
 }
 
@@ -1303,11 +1590,16 @@ summary() {
     echo "Prowlarr     http://$ip:$P_PROWLARR      API key: $PROWLARR_KEY"
     want qbittorrent && echo "qBittorrent  http://$ip:$P_QBIT      torrent port: $P_TORRENT (forward on your router)"
     want sabnzbd && echo "SABnzbd      http://$ip:$P_SAB      API key: ${SAB_KEY:-}"
+    want lidarr && echo "Lidarr       http://$ip:$P_LIDARR      API key: ${LIDARR_KEY:-}"
+    want bazarr && echo "Bazarr       http://$ip:$P_BAZARR      API key: ${BAZARR_KEY:-}"
+    want tdarr && echo "Tdarr        http://$ip:$P_TDARR      (same login; libraries created with transcoding OFF)"
     echo
     echo "Folders (inside every container the data folder is /data)"
     echo "  Movies     $DATA_DIR/Movies      → /data/Movies"
     echo "  TV Shows   $DATA_DIR/TV_Shows    → /data/TV_Shows"
     echo "  Downloads  $DATA_DIR/Active_Downloads → /data/Active_Downloads"
+    want lidarr && echo "  Music      $DATA_DIR/Music       → /data/Music"
+    want tdarr && echo "  Tdarr cache $DATA_DIR/Transcode_Cache → /temp"
   } >"$f"
   umask 022
 
@@ -1321,6 +1613,9 @@ summary() {
   printf "$row" "$C_BOLD" "Prowlarr" "$C_RESET" "$C_CYAN" "http://$ip:$P_PROWLARR" "$C_RESET"
   want qbittorrent && printf "$row" "$C_BOLD" "qBittorrent" "$C_RESET" "$C_CYAN" "http://$ip:$P_QBIT" "$C_RESET"
   want sabnzbd && printf "$row" "$C_BOLD" "SABnzbd" "$C_RESET" "$C_CYAN" "http://$ip:$P_SAB" "$C_RESET"
+  want lidarr && printf "$row" "$C_BOLD" "Lidarr" "$C_RESET" "$C_CYAN" "http://$ip:$P_LIDARR" "$C_RESET"
+  want bazarr && printf "$row" "$C_BOLD" "Bazarr" "$C_RESET" "$C_CYAN" "http://$ip:$P_BAZARR" "$C_RESET"
+  want tdarr && printf "$row" "$C_BOLD" "Tdarr" "$C_RESET" "$C_CYAN" "http://$ip:$P_TDARR" "$C_RESET"
 
   printf '\n    %sLogin%s  %s / %s%s\n' "$C_GRAY" "$C_RESET" "$APP_USER" "$APP_PASS" \
     "$( [[ ${GENERATED_PASS:-0} == 1 ]] && printf '  %s(generated, saved below)%s' "$C_GRAY" "$C_RESET")"
@@ -1328,7 +1623,7 @@ summary() {
 
   printf '\n  %sNext steps for you%s\n' "$C_BOLD" "$C_RESET"
   local n=1
-  printf '    %s%d.%s %sProwlarr%s → Indexers → Add Indexer. They sync to Radarr & Sonarr automatically.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET"
+  printf '    %s%d.%s %sProwlarr%s → Indexers → Add Indexer. They sync to Radarr, Sonarr%s automatically.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$(want lidarr && echo " & Lidarr"; true)"
   if want jellyfin; then
     printf '    %s%d.%s %sJellyfin%s → create your account, add libraries %s/data/Movies%s and %s/data/TV_Shows%s\n' \
       "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_CYAN" "$C_RESET" "$C_CYAN" "$C_RESET"
@@ -1341,6 +1636,9 @@ summary() {
   if [[ $SERVER == plex || $SERVER == none ]]; then seerr_srv="your Plex account"; else seerr_srv="Jellyfin (server URL: http://jellyfin:8096)"; fi
   printf '    %s%d.%s %sSeerr%s → sign in with %s. Radarr & Sonarr are already connected.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$seerr_srv"
   want sabnzbd && printf '    %s%d.%s %sSABnzbd%s → add your usenet provider in the setup wizard.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET"
+  want lidarr && printf '    %s%d.%s %sLidarr%s → ready; also add a Music library (%s/data/Music%s) in your media server.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_CYAN" "$C_RESET"
+  want bazarr && printf '    %s%d.%s %sBazarr%s → Settings → Providers: pick subtitle sites (e.g. OpenSubtitles.com needs a free account).\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET"
+  want tdarr && printf '    %s%d.%s %sTdarr%s → Movies & TV_Shows libraries are ready with transcoding %sOFF%s. Pick a Flow, then turn on Transcodes.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET"
 
   printf '\n    %sManage:%s cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"
   printf '    %sLog:%s    %s\n' "$C_GRAY" "$C_RESET" "$LOG_FILE"
@@ -1380,7 +1678,6 @@ main() {
   (( IS_TTY )) && trap 'printf "\e[?25h"' EXIT   # never leave the cursor hidden
   START_TIME=$SECONDS
   banner
-  [[ -n ${EXTRAS_IGNORED:-} ]] && warn "--extras=$EXTRAS_IGNORED isn't supported by this version yet; ignoring."
   preflight
   choose_options
   install_deps

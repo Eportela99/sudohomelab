@@ -23,7 +23,13 @@ The installer asks you to pick:
 - **Media server:** Jellyfin, Plex or both
 - **Download client:** qBittorrent, SABnzbd or both
 
-It always installs **Seerr, Radarr, Sonarr and Prowlarr**, then it:
+It always installs **Seerr, Radarr, Sonarr and Prowlarr**. Optional **extras** (pick any):
+
+- **Lidarr:** music, with `/data/Music`, download clients (category `music`) and Prowlarr indexer sync
+- **Bazarr:** subtitles, connected to Radarr and Sonarr, with a language profile you choose (e.g. `en,es`) set as the default
+- **Tdarr:** transcoding, with the admin account created and **Movies** and **TV_Shows** libraries set up with transcoding **off** until you pick a Flow
+
+Then it:
 
 - installs Docker if it's missing (official repository, with the distro packages as a fallback)
 - creates `Movies`, `TV_Shows` and `Active_Downloads` under one data folder (default `/srv/media`), mounted at `/data` in every container so imports are instant hardlinks
@@ -32,7 +38,7 @@ It always installs **Seerr, Radarr, Sonarr and Prowlarr**, then it:
 - connects **Prowlarr → Radarr + Sonarr**, so indexers you add sync automatically
 - pre-configures **Seerr** with Radarr and Sonarr
 
-What's left for you: add indexers in Prowlarr, create your Jellyfin/Plex account and libraries, and sign in to Seerr.
+What's left for you: add indexers in Prowlarr, create your Jellyfin/Plex account and libraries, and sign in to Seerr. With extras: pick subtitle providers in Bazarr, and choose a Flow in Tdarr.
 
 **Uninstall** (your media is never touched, `--purge` also deletes app configs):
 
@@ -46,7 +52,7 @@ sudo bash -c "$(curl -fsSL <url>)" _ --uninstall --purge
 curl -fsSL <url> | sudo bash -s -- --server=jellyfin --downloader=qbittorrent --yes
 ```
 
-Options: `--server=jellyfin|plex|both`, `--downloader=qbittorrent|sabnzbd|both`, `--data-dir=PATH`, `--username=NAME`, `--password=PASS`, `--plex-claim=TOKEN`, `--dry-run`, `--uninstall [--purge]`, `--help`.
+Options: `--server=jellyfin|plex|both`, `--downloader=qbittorrent|sabnzbd|both`, `--extras=lidarr,bazarr,tdarr|none`, `--subtitle-langs=en,es`, `--data-dir=PATH`, `--username=NAME`, `--password=PASS`, `--plex-claim=TOKEN`, `--dry-run`, `--uninstall [--purge]`, `--help`.
 
 - **Logs:** `/var/log/sudohomelab/media-stack-*.log`
 - **Credentials:** `/opt/sudohomelab/media-stack/credentials.txt` (root only)

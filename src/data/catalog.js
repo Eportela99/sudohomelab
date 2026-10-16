@@ -40,7 +40,7 @@ export const CATEGORIES = [
       options: [
         { key: 'server', label: 'Media server', type: 'one', choices: ['plex', 'jellyfin'], default: 'jellyfin' },
         { key: 'downloader', label: 'Download client', type: 'many', choices: ['qbittorrent', 'sabnzbd'], default: ['qbittorrent'] },
-        { key: 'extras', label: 'Extras', type: 'many', choices: ['lidarr', 'bazarr', 'tdarr', 'flaresolverr', 'dispatcharr'], default: [] },
+        { key: 'extras', label: 'Extras', type: 'many', choices: ['lidarr', 'bazarr', 'tdarr'], default: [] },
       ],
       core: ['seerr', 'radarr', 'sonarr', 'prowlarr'],
       // Wiring diagram: [from, to, label]
@@ -59,6 +59,7 @@ export const CATEGORIES = [
         ['bazarr', 'radarr', 'subs'],
         ['bazarr', 'sonarr', 'subs'],
         ['tdarr', '$server', 'transcodes'],
+        ['lidarr', '$server', 'music'],
         ['dispatcharr', '$server', 'live TV'],
       ],
     },
