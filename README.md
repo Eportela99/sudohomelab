@@ -13,8 +13,10 @@ One-line installers and **pre-wired stacks** for Proxmox, TrueNAS SCALE, Ubuntu 
 ### Media Stack (Ubuntu / Debian)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts/linux/stack/media-stack.sh | sudo bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts/linux/stack/media-stack.sh)"
 ```
+
+> Use this `sudo bash -c "$(curl …)"` form, not `curl … | sudo bash`. When sudo's input is a pipe, current sudo (Ubuntu's default `sudo-rs` included) runs the script in the background, so it can't read your answers. The script detects this and tells you the right command.
 
 The installer asks you to pick:
 
@@ -32,7 +34,13 @@ It always installs **Seerr, Radarr, Sonarr and Prowlarr**, then it:
 
 What's left for you: add indexers in Prowlarr, create your Jellyfin/Plex account and libraries, and sign in to Seerr.
 
-**Non-interactive:**
+**Uninstall** (your media is never touched, `--purge` also deletes app configs):
+
+```bash
+sudo bash -c "$(curl -fsSL <url>)" _ --uninstall --purge
+```
+
+**Non-interactive** (no questions, so the pipe form is fine here):
 
 ```bash
 curl -fsSL <url> | sudo bash -s -- --server=jellyfin --downloader=qbittorrent --yes

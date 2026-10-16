@@ -11,13 +11,16 @@
 #    · qBittorrent / SABnzbd → download folders + categories
 #
 #  Usage:
-#    curl -fsSL <url>/media-stack.sh | sudo bash
+#    sudo bash -c "$(curl -fsSL <url>/media-stack.sh)"
+#    sudo bash -c "$(curl -fsSL <url>/media-stack.sh)" _ --uninstall --purge
+#    (`curl | sudo bash` only works with --yes: see check_interactive)
 #    sudo bash media-stack.sh --server=jellyfin --downloader=qbittorrent --yes
 #    sudo bash media-stack.sh --help
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.1.0"
+VERSION="0.1.1"
+SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts/linux/stack/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
 LOG_DIR="/var/log/sudohomelab"
@@ -172,7 +175,32 @@ on_error() {
 trap 'on_error $LINENO "$BASH_COMMAND"' ERR
 
 # ── Prompts (read from /dev/tty so `curl | bash` still works) ─────────────────
-has_tty() { [[ -r /dev/tty ]] && { : </dev/tty; } 2>/dev/null; }
+# True when we own the terminal's foreground. Under `curl ... | sudo bash`, sudo
+# (with use_pty, the default on current Ubuntu) runs the command in the
+# background of its own pty: any read from /dev/tty then gets SIGTTIN and the
+# script silently freezes. So "a terminal exists" is not enough to prompt.
+tty_foreground() {
+  local pgid tpgid
+  read -r pgid tpgid < <(ps -o pgid=,tpgid= -p $$ 2>/dev/null) || return 1
+  [[ -n $tpgid && $tpgid != -1 && $pgid == "$tpgid" ]]
+}
+
+has_tty() { [[ -r /dev/tty ]] && { : </dev/tty; } 2>/dev/null && tty_foreground; }
+
+# Stop early, with the right command, instead of freezing at the first question.
+check_interactive() {
+  (( ASSUME_YES )) && return 0
+  [[ -r /dev/tty ]] && { : </dev/tty; } 2>/dev/null || return 0   # no terminal at all: defaults apply
+  tty_foreground && return 0
+  local args="" a
+  for a in "${ORIG_ARGS[@]}"; do args+=" $(printf '%q' "$a")"; done
+  printf '\n  %s✗%s This script asks you questions, but %scurl | sudo bash%s runs it in the background,\n' "$C_RED" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
+  printf '    so it can'"'"'t read your answers. Run it like this instead:\n\n' >&2
+  printf '      %ssudo bash -c "$(curl -fsSL %s)"%s%s\n\n' "$C_CYAN" "$SCRIPT_URL" "${args:+ _$args}" "$C_RESET" >&2
+  printf '    Or skip the questions:  curl -fsSL <url> | sudo bash -s --%s --yes\n\n' "$args" >&2
+  log "aborted: interactive run with stdin piped under sudo (background process group)"
+  exit 1
+}
 
 ask() { # ask "question" default → echoes answer
   local q=$1 def=${2:-} ans
@@ -325,7 +353,7 @@ xml_key() { sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$1" 2>/dev/null | head 
 # ── Steps ─────────────────────────────────────────────────────────────────────
 preflight() {
   step "Pre-flight checks"
-  [[ $EUID -eq 0 ]] || die "Please run as root:  curl -fsSL <url> | sudo bash"
+  [[ $EUID -eq 0 ]] || die "Please run as root:  sudo bash -c \"\$(curl -fsSL $SCRIPT_URL)\""
 
   [[ -r /etc/os-release ]] || die "Cannot detect the OS (/etc/os-release missing)."
   # shellcheck disable=SC1091
@@ -1188,13 +1216,14 @@ uninstall() {
   warn "This stops and removes the media stack containers."
   (( PURGE )) && warn "--purge: app configs in $INSTALL_DIR will be deleted too."
   info "Your media in the data folder is never touched."
-  confirm "Continue?" || exit 0
+  confirm "Continue?" || { info "Cancelled. Nothing was changed."; exit 0; }
   run "Removing containers" dc down --remove-orphans
   if (( PURGE )); then run "Deleting $INSTALL_DIR" rm -rf "$INSTALL_DIR"; fi
   ok "Uninstalled."
 }
 
 main() {
+  ORIG_ARGS=("$@")
   parse_args "$@"
   mkdir -p "$LOG_DIR" 2>/dev/null || { LOG_DIR=/tmp; LOG_FILE="/tmp/$(basename "$LOG_FILE")"; }
   : >"$LOG_FILE" 2>/dev/null || { LOG_FILE=/tmp/$(basename "$LOG_FILE"); : >"$LOG_FILE"; }
@@ -1206,6 +1235,7 @@ main() {
   # (no grep -q: it would exit early and SIGPIPE curl, which pipefail reports as failure)
   curl --help all 2>/dev/null | grep -- --fail-with-body >/dev/null || CURL_FAIL=--fail
 
+  check_interactive
   if (( UNINSTALL )); then uninstall; exit 0; fi
 
   (( IS_TTY )) && trap 'printf "\e[?25h"' EXIT   # never leave the cursor hidden

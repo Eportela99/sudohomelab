@@ -5,6 +5,9 @@ export const GITHUB_REPO = 'https://github.com/Eportela99/sudohomelab'
 
 // flags: [[key, value], ...] → ' --key=value' or ' -Key value'
 const unix = (f) => f.map(([k, v]) => ` --${k}=${v}`).join('')
+// `sudo bash -c "$(curl …)"` keeps the terminal in the foreground so scripts can
+// ask questions; `curl … | sudo bash` freezes at the first prompt on current sudo.
+const sudoBash = (url, f) => `sudo bash -c "$(curl -fsSL ${url})"${f.length ? ' _' + unix(f) : ''}`
 const ps = (f) => f.map(([k, v]) => ` -${k[0].toUpperCase()}${k.slice(1)} ${v}`).join('')
 
 export const PLATFORMS = [
@@ -26,7 +29,7 @@ export const PLATFORMS = [
     shell: 'bash',
     note: 'Ubuntu / Debian. Installs Docker if missing, then deploys with Compose.',
     ext: 'sh',
-    cmd: (path, f = []) => `curl -fsSL ${SCRIPT_BASE}/linux/${path}.sh | sudo bash${f.length ? ' -s --' + unix(f) : ''}`,
+    cmd: (path, f = []) => sudoBash(`${SCRIPT_BASE}/linux/${path}.sh`, f),
   },
   {
     id: 'truenas',
@@ -36,7 +39,7 @@ export const PLATFORMS = [
     shell: 'bash',
     note: 'Run from the TrueNAS shell. Deploys as a custom app on your pool.',
     ext: 'sh',
-    cmd: (path, f = []) => `curl -fsSL ${SCRIPT_BASE}/truenas/${path}.sh | sudo bash${f.length ? ' -s --' + unix(f) : ''}`,
+    cmd: (path, f = []) => sudoBash(`${SCRIPT_BASE}/truenas/${path}.sh`, f),
   },
   {
     id: 'windows',
@@ -59,7 +62,7 @@ export const PLATFORMS = [
     shell: 'zsh',
     note: 'Run in Terminal. Uses Homebrew + OrbStack / Docker Desktop.',
     ext: 'sh',
-    cmd: (path, f = []) => `curl -fsSL ${SCRIPT_BASE}/macos/${path}.sh | bash${f.length ? ' -s --' + unix(f) : ''}`,
+    cmd: (path, f = []) => `bash -c "$(curl -fsSL ${SCRIPT_BASE}/macos/${path}.sh)"${f.length ? ' _' + unix(f) : ''}`,
   },
 ]
 
