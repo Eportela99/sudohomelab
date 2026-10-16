@@ -166,7 +166,7 @@ function OptionChips({ opt, value, onChange, accent }) {
   )
 }
 
-export function StackBuilder({ stack, accent, supported }) {
+export function StackBuilder({ stack, folder, accent, supported }) {
   const [sel, setSel] = useState(() => defaultSelection(stack))
   useEffect(() => setSel(defaultSelection(stack)), [stack])
 
@@ -208,7 +208,7 @@ export function StackBuilder({ stack, accent, supported }) {
           <strong>0</strong> manual config steps
         </span>
       </div>
-      <InstallBox name={stack.name} path={`stack/${stack.id}`} supported={supported} available={stack.available} flags={flags} accent={accent} />
+      <InstallBox name={stack.name} folder={folder} script={stack.id} supported={supported} available={stack.available} flags={flags} accent={accent} />
     </section>
   )
 }

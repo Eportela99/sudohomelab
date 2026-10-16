@@ -20,7 +20,7 @@
 set -Eeuo pipefail
 
 VERSION="0.3.1"
-SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts/linux/stack/media-stack.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/linux/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
 LOG_DIR="/var/log/sudohomelab"

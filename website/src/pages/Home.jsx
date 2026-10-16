@@ -214,7 +214,7 @@ function FeaturedStack() {
         <p>Other script sites install apps. We install them already connected: API keys exchanged, indexers synced, download clients and libraries mapped. Try it, flip the options and watch the wiring change.</p>
       </div>
       <div className="reveal">
-        <StackBuilder stack={media.stack} accent={media.accent} supported={supportedFor(media)} />
+        <StackBuilder stack={media.stack} folder={media.folder} accent={media.accent} supported={supportedFor(media)} />
       </div>
     </section>
   )

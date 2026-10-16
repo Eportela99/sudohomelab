@@ -111,7 +111,7 @@ export function AppDrawer({ appId, onClose }) {
         {app.note && <div className="drawer-note">ⓘ {app.note}</div>}
 
         <h4 className="drawer-h">Install</h4>
-        <InstallBox name={app.name} path={app.id} supported={app.platforms} accent={cat.accent} />
+        <InstallBox name={app.name} folder={cat.folder} script={app.id} supported={app.platforms} accent={cat.accent} />
 
         {friends.length > 0 && (
           <>

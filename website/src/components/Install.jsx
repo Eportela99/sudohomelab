@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import { PLATFORMS, GITHUB_REPO, SCRIPT_BASE, platformById, placeholderScript } from '../data/platforms'
+import { PLATFORMS, GITHUB_REPO, SCRIPT_BASE, platformById, placeholderScript, scriptPath } from '../data/platforms'
 import { downloadText, usePlatform } from '../hooks'
 import { AppIcon, CopyButton, Icon } from './Bits'
 
@@ -52,19 +52,21 @@ function highlight(cmd) {
 }
 
 // available: platforms whose script is already published (undefined = none yet).
-export function InstallBox({ name, path, supported, available, flags = [], accent }) {
+// folder: repo project folder (e.g. Media_Stack) · script: file name without extension
+export function InstallBox({ name, folder, script, supported, available, flags = [], accent }) {
   const { platform, setPlatform } = usePlatform()
   const p = platformById[platform]
   const ok = supported.includes(platform)
+  const path = scriptPath(folder, p, script)
   const cmd = p.cmd(path, flags)
-  const filename = `${path.split('/').pop()}-${p.id}.${p.ext}`
+  const filename = `${script}-${p.id}.${p.ext}`
   const published = available?.includes(platform)
 
   // Published scripts are fetched from GitHub (raw URLs allow CORS); others get a placeholder.
   const download = async () => {
     if (published) {
       try {
-        const res = await fetch(`${SCRIPT_BASE}/${p.id}/${path}.${p.ext}`)
+        const res = await fetch(`${SCRIPT_BASE}/${path}`)
         if (res.ok) return downloadText(filename, await res.text())
       } catch {
         /* fall through to placeholder */
@@ -96,7 +98,7 @@ export function InstallBox({ name, path, supported, available, flags = [], accen
               <button className="btn-ghost sm" onClick={download}>
                 <Icon.Download /> Download .{p.ext}
               </button>
-              <a className="btn-ghost sm" href={`${GITHUB_REPO}/tree/main/scripts/${p.id}/${path}.${p.ext}`} target="_blank" rel="noreferrer">
+              <a className="btn-ghost sm" href={`${GITHUB_REPO}/blob/main/${path}`} target="_blank" rel="noreferrer">
                 <Icon.GitHub /> Source
               </a>
             </span>

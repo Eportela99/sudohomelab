@@ -44,7 +44,7 @@ export function CategoryPage({ id, appId }) {
       <div className="container page-body">
         {cat.stack && (
           <div className="reveal">
-            <StackBuilder stack={cat.stack} accent={cat.accent} supported={supportedFor(cat)} />
+            <StackBuilder stack={cat.stack} folder={cat.folder} accent={cat.accent} supported={supportedFor(cat)} />
           </div>
         )}
 
@@ -161,7 +161,7 @@ export function StacksPage({ id }) {
         </div>
       </header>
       <div className="container page-body">
-        <StackBuilder key={active.id} stack={active} accent={cat.accent} supported={supportedFor(cat)} />
+        <StackBuilder key={active.id} stack={active} folder={cat.folder} accent={cat.accent} supported={supportedFor(cat)} />
       </div>
     </div>
   )

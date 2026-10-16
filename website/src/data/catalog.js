@@ -1,4 +1,6 @@
-// The whole site is driven from this file. Adding an app here adds it to the
+// The whole site is driven from this file. Each category is a folder in the repo,
+// scripts live at <folder>/<platform>/<script>.<ext> (e.g. Media_Stack/linux/media-stack.sh).
+// Adding an app here adds it to the
 // category page, the search palette and the advisor's recommendations.
 //
 // status: 'planned' | 'beta' | 'ready'
@@ -11,6 +13,7 @@ const SERVER = ['proxmox', 'linux', 'truenas']
 export const CATEGORIES = [
   {
     id: 'media',
+    folder: 'Media_Stack',   // repo folder: Media_Stack/<platform>/<script>
     name: 'Media Stack',
     tagline: 'Stream, request and automate your whole library.',
     description:
@@ -66,6 +69,7 @@ export const CATEGORIES = [
   },
   {
     id: 'dashboards',
+    folder: 'Dashboards',   // repo folder: Dashboards/<platform>/<script>
     name: 'Dashboards',
     tagline: 'One pane of glass for your entire lab.',
     description: 'Start pages that show every service, its status and its stats at a glance.',
@@ -81,6 +85,7 @@ export const CATEGORIES = [
   },
   {
     id: 'network',
+    folder: 'AdBlock_DNS_Proxy',   // repo folder: AdBlock_DNS_Proxy/<platform>/<script>
     name: 'Ad-blocking, DNS & Proxy',
     tagline: 'Block ads network-wide and put every app behind a clean URL.',
     description: 'DNS sinkholes, recursive resolvers and reverse proxies with automatic HTTPS.',
@@ -110,6 +115,7 @@ export const CATEGORIES = [
   },
   {
     id: 'cloud',
+    folder: 'Self_Hosted_Cloud',   // repo folder: Self_Hosted_Cloud/<platform>/<script>
     name: 'Self-Hosted Cloud',
     tagline: 'Your files, photos and passwords, on your hardware.',
     description: 'Replace Google Drive, Google Photos and password managers with apps you own.',
@@ -140,6 +146,7 @@ export const CATEGORIES = [
   },
   {
     id: 'ai',
+    folder: 'AI_Tools',   // repo folder: AI_Tools/<platform>/<script>
     name: 'AI & Automation',
     tagline: 'Private LLMs, MCP servers and workflow automation.',
     description: 'Run models locally, give them tools through MCP and automate everything else.',
@@ -171,6 +178,7 @@ export const CATEGORIES = [
   },
   {
     id: 'home',
+    folder: 'Home_Automation',   // repo folder: Home_Automation/<platform>/<script>
     name: 'Home Automation',
     tagline: 'Local-first smart home that keeps working without the internet.',
     description: 'Home Assistant plus the brokers, bridges and NVR that make it shine.',
@@ -203,6 +211,7 @@ export const CATEGORIES = [
   },
   {
     id: 'books',
+    folder: 'Books_Audiobooks',   // repo folder: Books_Audiobooks/<platform>/<script>
     name: 'Books & Audiobooks',
     tagline: 'Your personal Audible and Kindle, minus the subscription.',
     description: 'Servers for audiobooks, podcasts, ebooks and comics with great mobile apps.',
@@ -217,6 +226,7 @@ export const CATEGORIES = [
   },
   {
     id: 'remote',
+    folder: 'VPN_Remote_Access',   // repo folder: VPN_Remote_Access/<platform>/<script>
     name: 'VPN & Remote Access',
     tagline: 'Reach your lab from anywhere without opening ports.',
     description: 'Mesh VPNs, classic WireGuard and tunnels for sharing apps securely.',
@@ -231,6 +241,7 @@ export const CATEGORIES = [
   },
   {
     id: 'ops',
+    folder: 'Monitoring_Management',   // repo folder: Monitoring_Management/<platform>/<script>
     name: 'Monitoring & Management',
     tagline: 'Know what\'s up, what\'s down and what\'s eating your RAM.',
     description: 'Container management, uptime checks, metrics and push notifications.',
@@ -258,10 +269,10 @@ export const EXTRA_NODES = {
   'mistral:7b': { name: 'Mistral 7B' }, 'nomic-embed-text': { name: 'Nomic Embed' },
 }
 
-export const ALL_APPS = CATEGORIES.flatMap((c) => c.apps.map((a) => ({ ...a, category: c.id, accent: c.accent })))
+export const ALL_APPS = CATEGORIES.flatMap((c) => c.apps.map((a) => ({ ...a, category: c.id, folder: c.folder, accent: c.accent })))
 export const appById = Object.fromEntries(ALL_APPS.map((a) => [a.id, a]))
 export const categoryById = Object.fromEntries(CATEGORIES.map((c) => [c.id, c]))
-export const STACKS = CATEGORIES.filter((c) => c.stack).map((c) => ({ ...c.stack, category: c.id, accent: c.accent }))
+export const STACKS = CATEGORIES.filter((c) => c.stack).map((c) => ({ ...c.stack, category: c.id, folder: c.folder, accent: c.accent }))
 
 export function nodeInfo(id) {
   return appById[id] || EXTRA_NODES[id] || { name: id }

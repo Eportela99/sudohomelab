@@ -12,7 +12,7 @@
 #  Seerr, Bazarr, Tdarr) is the Linux script's code, loaded as a library.
 #
 #  Usage (TrueNAS shell, as root or with sudo):
-#    sudo bash -c "$(curl -fsSL <url>/truenas/stack/media-stack.sh)"
+#    sudo bash -c "$(curl -fsSL <url>/Media_Stack/truenas/media-stack.sh)"
 #    sudo bash -c "$(curl -fsSL <url>)" _ --mode=catalog --pool=tank --yes
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
@@ -20,8 +20,8 @@ set -Eeuo pipefail
 # shellcheck can't follow:
 # shellcheck disable=SC2034
 
-TN_REPO_RAW="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts"
-LIB_URL="$TN_REPO_RAW/linux/stack/media-stack.sh"
+TN_REPO_RAW="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack"
+LIB_URL="$TN_REPO_RAW/linux/media-stack.sh"
 
 # ── Load the shared core ──────────────────────────────────────────────────────
 # Running from a git checkout: use the sibling file, so both are always in step.
@@ -29,8 +29,8 @@ LIB_URL="$TN_REPO_RAW/linux/stack/media-stack.sh"
 tn_load_core() {
   local here="" lib
   [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]] && here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  if [[ -n $here && -f $here/../../linux/stack/media-stack.sh ]]; then
-    lib="$here/../../linux/stack/media-stack.sh"
+  if [[ -n $here && -f $here/../linux/media-stack.sh ]]; then
+    lib="$here/../linux/media-stack.sh"
   else
     lib=$(mktemp /tmp/sudohomelab-core.XXXXXX)
     curl -fsSL "$LIB_URL" -o "$lib" || { echo "Couldn't download the installer core from $LIB_URL" >&2; exit 1; }
@@ -42,7 +42,7 @@ tn_load_core
 
 # ── TrueNAS defaults (override the core's) ────────────────────────────────────
 VERSION="0.1.0-truenas (core $VERSION)"
-SCRIPT_URL="$TN_REPO_RAW/truenas/stack/media-stack.sh"
+SCRIPT_URL="$TN_REPO_RAW/truenas/media-stack.sh"
 LOG_FILE="$LOG_DIR/media-stack-truenas-$(date +%Y%m%d-%H%M%S).log"
 PUID=568; PGID=568          # TrueNAS's built-in "apps" user
 SEERR_UID=568

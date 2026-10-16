@@ -1,6 +1,7 @@
 // Scripts are served straight from the GitHub repo until the sudohomelab.com domain exists.
-// Layout: scripts/<platform id>/<path>.<ext>
-export const SCRIPT_BASE = 'https://raw.githubusercontent.com/Eportela99/sudohomelab/main/scripts'
+// Layout: <Project folder>/<platform id>/<script>.<ext>, e.g. Media_Stack/linux/media-stack.sh
+export const SCRIPT_BASE = 'https://raw.githubusercontent.com/Eportela99/sudohomelab/main'
+export const scriptPath = (folder, platform, script) => `${folder}/${platform.id}/${script}.${platform.ext}`
 export const GITHUB_REPO = 'https://github.com/Eportela99/sudohomelab'
 
 // flags: [[key, value], ...] → ' --key=value' or ' -Key value'
@@ -19,7 +20,7 @@ export const PLATFORMS = [
     shell: 'bash',
     note: 'Run in the Proxmox host shell. Creates a dedicated LXC container.',
     ext: 'sh',
-    cmd: (path, f = []) => `bash <(curl -fsSL ${SCRIPT_BASE}/proxmox/${path}.sh)${unix(f)}`,
+    cmd: (path, f = []) /* path from scriptPath() */ => `bash <(curl -fsSL ${SCRIPT_BASE}/${path})${unix(f)}`,
   },
   {
     id: 'linux',
@@ -29,7 +30,7 @@ export const PLATFORMS = [
     shell: 'bash',
     note: 'Ubuntu / Debian. Installs Docker if missing, then deploys with Compose.',
     ext: 'sh',
-    cmd: (path, f = []) => sudoBash(`${SCRIPT_BASE}/linux/${path}.sh`, f),
+    cmd: (path, f = []) /* path from scriptPath() */ => sudoBash(`${SCRIPT_BASE}/${path}`, f),
   },
   {
     id: 'truenas',
@@ -39,7 +40,7 @@ export const PLATFORMS = [
     shell: 'bash',
     note: 'Run from the TrueNAS shell. Deploys as a custom app on your pool.',
     ext: 'sh',
-    cmd: (path, f = []) => sudoBash(`${SCRIPT_BASE}/truenas/${path}.sh`, f),
+    cmd: (path, f = []) /* path from scriptPath() */ => sudoBash(`${SCRIPT_BASE}/${path}`, f),
   },
   {
     id: 'windows',
@@ -49,10 +50,10 @@ export const PLATFORMS = [
     shell: 'powershell',
     note: 'Run in an elevated PowerShell. Uses Docker Desktop / WSL2 or native installers.',
     ext: 'ps1',
-    cmd: (path, f = []) =>
+    cmd: (path, f = []) /* path from scriptPath() */ =>
       f.length
-        ? `& ([scriptblock]::Create((irm ${SCRIPT_BASE}/windows/${path}.ps1)))${ps(f)}`
-        : `irm ${SCRIPT_BASE}/windows/${path}.ps1 | iex`,
+        ? `& ([scriptblock]::Create((irm ${SCRIPT_BASE}/${path})))${ps(f)}`
+        : `irm ${SCRIPT_BASE}/${path} | iex`,
   },
   {
     id: 'macos',
@@ -62,7 +63,7 @@ export const PLATFORMS = [
     shell: 'zsh',
     note: 'Run in Terminal. Uses Homebrew + OrbStack / Docker Desktop.',
     ext: 'sh',
-    cmd: (path, f = []) => `bash -c "$(curl -fsSL ${SCRIPT_BASE}/macos/${path}.sh)"${f.length ? ' _' + unix(f) : ''}`,
+    cmd: (path, f = []) /* path from scriptPath() */ => `bash -c "$(curl -fsSL ${SCRIPT_BASE}/${path})"${f.length ? ' _' + unix(f) : ''}`,
   },
 ]
 
