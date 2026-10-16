@@ -42,7 +42,7 @@ function save(key, value) {
 const PlatformContext = createContext(null)
 
 export function PlatformProvider({ children }) {
-  const [platform, setPlatformState] = useState(() => load('shl.platform', 'proxmox'))
+  const [platform, setPlatformState] = useState(() => load('shl.platform', 'linux'))
   const setPlatform = useCallback((p) => {
     setPlatformState(p)
     save('shl.platform', p)
