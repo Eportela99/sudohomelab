@@ -4,12 +4,12 @@ export const SCRIPT_BASE = 'https://raw.githubusercontent.com/Eportela99/sudohom
 export const scriptPath = (folder, platform, script) => `${folder}/${platform.id}/${script}.${platform.ext}`
 export const GITHUB_REPO = 'https://github.com/Eportela99/sudohomelab'
 
-// flags: [[key, value], ...] → ' --key=value' or ' -Key value'
-const unix = (f) => f.map(([k, v]) => ` --${k}=${v}`).join('')
+// flags: [[key, value], ...] → ' --key=value' or ' -Key value'; value true → bare switch (' --purge')
+const unix = (f) => f.map(([k, v]) => (v === true ? ` --${k}` : ` --${k}=${v}`)).join('')
 // `sudo bash -c "$(curl …)"` keeps the terminal in the foreground so scripts can
 // ask questions; `curl … | sudo bash` freezes at the first prompt on current sudo.
 const sudoBash = (url, f) => `sudo bash -c "$(curl -fsSL ${url})"${f.length ? ' _' + unix(f) : ''}`
-const ps = (f) => f.map(([k, v]) => ` -${k[0].toUpperCase()}${k.slice(1)} ${v}`).join('')
+const ps = (f) => f.map(([k, v]) => ` -${k[0].toUpperCase()}${k.slice(1)}${v === true ? '' : ` ${v}`}`).join('')
 
 export const PLATFORMS = [
   {

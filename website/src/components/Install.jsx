@@ -61,6 +61,9 @@ export function InstallBox({ name, folder, script, supported, available, flags =
   const cmd = p.cmd(path, flags)
   const filename = `${script}-${p.id}.${p.ext}`
   const published = available?.includes(platform)
+  const [showUninstall, setShowUninstall] = useState(false)
+  const [purge, setPurge] = useState(false)
+  const uninstallCmd = p.cmd(path, purge ? [['uninstall', true], ['purge', true]] : [['uninstall', true]])
 
   // Published scripts are fetched from GitHub (raw URLs allow CORS); others get a placeholder.
   const download = async () => {
@@ -101,8 +104,39 @@ export function InstallBox({ name, folder, script, supported, available, flags =
               <a className="btn-ghost sm" href={`${GITHUB_REPO}/blob/main/${path}`} target="_blank" rel="noreferrer">
                 <Icon.GitHub /> Source
               </a>
+              {published && (
+                <button className={`btn-ghost sm ${showUninstall ? 'on' : ''}`} onClick={() => setShowUninstall((v) => !v)} aria-expanded={showUninstall}>
+                  <Icon.Trash /> Uninstall
+                </button>
+              )}
             </span>
           </div>
+          {published && showUninstall && (
+            <div className="uninstall">
+              <div className="uninstall-head">
+                <strong>Uninstall {name}</strong>
+                <div className="seg" role="radiogroup" aria-label="What to remove">
+                  <button role="radio" aria-checked={!purge} className={!purge ? 'on' : ''} onClick={() => setPurge(false)}>
+                    Keep settings
+                  </button>
+                  <button role="radio" aria-checked={purge} className={purge ? 'on' : ''} onClick={() => setPurge(true)}>
+                    Delete settings too
+                  </button>
+                </div>
+              </div>
+              <div className="cmd danger" key={uninstallCmd}>
+                <span className="cmd-shell">{p.shell === 'powershell' ? 'PS>' : '$'}</span>
+                <code className="cmd-text">{highlight(uninstallCmd)}</code>
+                <CopyButton text={uninstallCmd} />
+              </div>
+              <p className="uninstall-note">
+                {purge
+                  ? 'Removes the apps and deletes their settings, logins and API keys. '
+                  : 'Removes the apps but keeps their settings, so reinstalling brings back your logins and wiring. '}
+                <strong>Your media is never deleted.</strong> It asks before removing anything.
+              </p>
+            </div>
+          )}
         </>
       ) : (
         <div className="install-na">
