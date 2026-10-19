@@ -19,7 +19,7 @@ const DNS_UNINSTALL = {
 const DNS_DOCS = [
   {
     title: 'What the script does',
-    text: 'One script installs Pi-hole v6, Unbound and Nginx Proxy Manager in Docker and connects them. Run it again any time for a menu: Install, List domains, Add domain, Delete domain, Uninstall.',
+    text: 'One script installs Pi-hole v6, Unbound and Nginx Proxy Manager in Docker and connects them. Run it again any time for a menu: Install, List domains, Add domain, Delete domain, Uninstall. After each one it goes back to the menu until you pick Quit.',
     items: [
       'Checks port 53 first. If systemd-resolved holds it, it turns off only the DNS stub and keeps the host resolving. Other DNS servers are shown to you before anything is stopped.',
       'Pi-hole blocks ads with curated HaGeZi lists; Unbound looks sites up privately with DNSSEC.',

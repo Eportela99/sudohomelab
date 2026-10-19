@@ -25,7 +25,10 @@ Run it and pick what to do:
     3) Add domain     an app's address + a name, e.g. 192.168.1.50:8096 → jellyfin.home
     4) Delete domain  remove an app name (the app itself isn't touched)
     5) Uninstall      remove everything (asks whether to keep the settings)
+    6) Quit           close the menu
 ```
+
+After each action, press Enter to go back to the menu, or `q` to quit.
 
 Or skip the menu with an action:
 

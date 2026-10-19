@@ -19,7 +19,7 @@
 #      Names answer with the LAN address at home and the VPN address over
 #      Tailscale/WireGuard, so the same name works in both places.
 #
-#  Usage (no options = a menu: Install, List / Add / Delete domain, Uninstall):
+#  Usage (no options = a menu: Install, List / Add / Delete domain, Uninstall, Quit):
 #    sudo bash -c "$(curl -fsSL <url>/pihole.sh)"
 #    sudo bash -c "$(curl -fsSL <url>/pihole.sh)" _ --install
 #    sudo bash -c "$(curl -fsSL <url>/pihole.sh)" _ --uninstall --purge
@@ -28,7 +28,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.3.0"
+VERSION="0.3.1"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/AdBlock_DNS_Proxy/linux/pihole.sh"
 INSTALL_DIR="/opt/sudohomelab/pihole"
 LOG_DIR="/var/log/sudohomelab"
@@ -2131,15 +2131,23 @@ main() {
   log "kernel: $(uname -a)"
 
   check_interactive
-  [[ -z $ACTION ]] && choose_action
+  if [[ -n $ACTION ]] || (( ASSUME_YES )) || ! has_tty; then
+    ACTION=${ACTION:-install}
+    run_action
+  else
+    menu_loop
+  fi
+}
+
+run_action() {
   log "action: $ACTION"
   case $ACTION in
-    uninstall) uninstall; exit 0 ;;
+    uninstall) uninstall; return ;;
     list|add|delete)
       (( BANNER_SHOWN )) || banner
       load_install
       case $ACTION in list) list_domains ;; add) add_domains; list_domains ;; delete) delete_domains; list_domains ;; esac
-      exit 0 ;;
+      return ;;
   esac
 
   START_TIME=$SECONDS
@@ -2156,11 +2164,27 @@ main() {
   log "install finished"
 }
 
-# No action given: a menu (or install, when there's nobody to ask).
+# The menu comes back after each action until you pick Quit. Each action runs
+# in a subshell, so its exits (done, cancelled or failed) return here.
+menu_loop() {
+  local ans
+  while :; do
+    choose_action
+    [[ $ACTION == quit ]] && break
+    trap - ERR; set +e
+    ( set -e; trap 'on_error $LINENO "$BASH_COMMAND"' ERR; run_action )
+    set -e; trap 'on_error $LINENO "$BASH_COMMAND"' ERR
+    printf '\n  %s›%s Press Enter for the menu, or q to quit: ' "$C_CYAN" "$C_RESET" >/dev/tty
+    IFS= read -r ans </dev/tty || ans=q
+    [[ ${ans,,} =~ ^q(uit)?$ ]] && break
+  done
+  info "Bye."
+}
+
+# No action given: the main menu.
 BANNER_SHOWN=0
 choose_action() {
-  if (( ASSUME_YES )) || ! has_tty; then ACTION=install; return; fi
-  banner; BANNER_SHOWN=1
+  (( BANNER_SHOWN )) || { banner; BANNER_SHOWN=1; }
   local installed=0 dom
   [[ -f $INSTALL_DIR/docker-compose.yml ]] && installed=1
   dom=$(state_get DOMAIN); dom=${dom:-home}
@@ -2169,8 +2193,9 @@ choose_action() {
     "List domains|the app names and the address each one points to" \
     "Add domain|an app's address + a name, e.g. 192.168.1.50:8096 → jellyfin.$dom" \
     "Delete domain|remove an app name (the app itself isn't touched)" \
-    "Uninstall|remove everything (asks whether to keep the settings)") in
-    1) ACTION=install ;; 2) ACTION=list ;; 3) ACTION=add ;; 4) ACTION=delete ;; 5) ACTION=uninstall ;;
+    "Uninstall|remove everything (asks whether to keep the settings)" \
+    "Quit|close the menu") in
+    1) ACTION=install ;; 2) ACTION=list ;; 3) ACTION=add ;; 4) ACTION=delete ;; 5) ACTION=uninstall ;; 6) ACTION=quit ;;
   esac
 }
 
