@@ -12,7 +12,7 @@ Each project is a folder with one subfolder per platform (`linux/`, `truenas/`, 
 | --- | --- | --- |
 | [Media_Stack](Media_Stack) | Jellyfin/Plex, Seerr, *arr apps, downloaders, pre-wired | 🧪 Beta: Ubuntu, TrueNAS |
 | [Dashboards](Dashboards) | Homarr, Homepage, CasaOS, Glance | Planned |
-| [AdBlock_DNS_Proxy](AdBlock_DNS_Proxy) | Pi-hole, AdGuard Home, Unbound, reverse proxies | Planned |
+| [AdBlock_DNS_Proxy](AdBlock_DNS_Proxy) | Pi-hole + Unbound (ready), AdGuard Home, reverse proxies | 🧪 Beta: Pi-hole on Ubuntu |
 | [Self_Hosted_Cloud](Self_Hosted_Cloud) | Nextcloud Suite, Immich, Vaultwarden, Syncthing | Planned |
 | [AI_Tools](AI_Tools) | Ollama, Open WebUI, MCP servers, OpenCode, n8n | Planned |
 | [Home_Automation](Home_Automation) | Home Assistant, MQTT, Zigbee2MQTT, Node-RED | Planned |
@@ -28,6 +28,16 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohome
 ```
 
 More, including TrueNAS: [Media_Stack/README.md](Media_Stack/README.md).
+
+### Quick start: Pi-hole on Ubuntu
+
+Network-wide ad blocking with your own Unbound resolver. Frees port 53, loads curated blocklists and asks you the rest.
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/AdBlock_DNS_Proxy/linux/pihole.sh)"
+```
+
+More: [AdBlock_DNS_Proxy/README.md](AdBlock_DNS_Proxy/README.md).
 
 ## Website
 
