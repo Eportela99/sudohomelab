@@ -12,7 +12,7 @@ Each project is a folder with one subfolder per platform (`linux/`, `truenas/`, 
 | --- | --- | --- |
 | [Media_Stack](Media_Stack) | Jellyfin/Plex, Seerr, *arr apps, downloaders, pre-wired | 🧪 Beta: Ubuntu, TrueNAS |
 | [Dashboards](Dashboards) | Homarr, Homepage, CasaOS, Glance | Planned |
-| [AdBlock_DNS_Proxy](AdBlock_DNS_Proxy) | Pi-hole + Unbound (ready), AdGuard Home, reverse proxies | 🧪 Beta: Pi-hole on Ubuntu |
+| [AdBlock_DNS_Proxy](AdBlock_DNS_Proxy) | Private DNS Stack: Pi-hole + Unbound + Nginx Proxy Manager, app names like `jellyfin.home` | 🧪 Beta: Ubuntu |
 | [Self_Hosted_Cloud](Self_Hosted_Cloud) | Nextcloud Suite, Immich, Vaultwarden, Syncthing | Planned |
 | [AI_Tools](AI_Tools) | Ollama, Open WebUI, MCP servers, OpenCode, n8n | Planned |
 | [Home_Automation](Home_Automation) | Home Assistant, MQTT, Zigbee2MQTT, Node-RED | Planned |
@@ -29,9 +29,9 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohome
 
 More, including TrueNAS: [Media_Stack/README.md](Media_Stack/README.md).
 
-### Quick start: Pi-hole on Ubuntu
+### Quick start: Private DNS Stack on Ubuntu
 
-Network-wide ad blocking with your own Unbound resolver. Frees port 53, loads curated blocklists and asks you the rest.
+Pi-hole ad blocking, Unbound private DNS, and Nginx Proxy Manager so your apps get names like `https://jellyfin.home` (at home and over Tailscale). Run it again for a menu to add, list and delete names.
 
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/AdBlock_DNS_Proxy/linux/pihole.sh)"

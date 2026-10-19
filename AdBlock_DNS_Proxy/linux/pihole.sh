@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────────
-#  sudo homelab · Pi-hole installer (Ubuntu / Debian)
+#  sudo homelab · Pi-hole + Unbound + Nginx Proxy Manager (Ubuntu / Debian)
 #  https://github.com/Eportela99/sudohomelab
 #
 #  Installs Pi-hole v6 as a Docker container (host network, so it sees real
-#  client IPs) and sets it up so it's blocking from the first minute:
+#  client IPs), Unbound, and Nginx Proxy Manager, so apps get names like
+#  https://jellyfin.home. It's blocking from the first minute:
 #    · Port 53 is checked first and freed if something holds it
 #      (systemd-resolved's DNS stub, dnsmasq, bind9, another DNS container…)
 #    · Your admin password (typed or generated)
@@ -13,16 +14,21 @@
 #    · Who may use it (local network only, or VPNs/other subnets too)
 #    · Device names in the query log (asks your router), DNSSEC,
 #      daily blocklist refresh
+#    · App names: you give an address (192.168.1.50:8096) and a name (jellyfin),
+#      it adds the DNS record in Pi-hole and the HTTPS route in the proxy.
+#      Names answer with the LAN address at home and the VPN address over
+#      Tailscale/WireGuard, so the same name works in both places.
 #
-#  Usage:
+#  Usage (no options = a menu: Install, List / Add / Delete domain, Uninstall):
 #    sudo bash -c "$(curl -fsSL <url>/pihole.sh)"
+#    sudo bash -c "$(curl -fsSL <url>/pihole.sh)" _ --install
 #    sudo bash -c "$(curl -fsSL <url>/pihole.sh)" _ --uninstall --purge
-#    sudo bash pihole.sh --blocklists=balanced --upstream=unbound --yes
+#    sudo bash pihole.sh --add=jellyfin=192.168.1.50:8096
 #    sudo bash pihole.sh --help
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/AdBlock_DNS_Proxy/linux/pihole.sh"
 INSTALL_DIR="/opt/sudohomelab/pihole"
 LOG_DIR="/var/log/sudohomelab"
@@ -30,6 +36,7 @@ LOG_FILE="$LOG_DIR/pihole-$(date +%Y%m%d-%H%M%S).log"
 PROJECT="sudohomelab-pihole"   # compose project name
 IMAGE="pihole/pihole:latest"
 UNBOUND_IMAGE="klutchell/unbound:latest"   # maintained, multi-arch (amd64/arm64/arm)
+NPM_IMAGE="jc21/nginx-proxy-manager:latest"
 RESOLVED_DROPIN="/etc/systemd/resolved.conf.d/sudohomelab-pihole.conf"
 GRAVITY_UNIT="sudohomelab-pihole-gravity"  # systemd timer for the daily refresh
 
@@ -47,15 +54,22 @@ DEVICE_NAMES=""    # yes | no
 ROUTER_IP=""
 LOCAL_DOMAIN=""
 DNSSEC=1           # for public upstreams (Unbound validates by itself)
+DOMAIN=""          # ending for app names: home → jellyfin.home, or your own (home.example.com)
+CERT_MODE=""       # local (this machine's own certificate authority) | letsencrypt
+CF_TOKEN=""        # Cloudflare API token, for Let's Encrypt with your own domain
+ADMIN_EMAIL=""     # proxy admin login (and Let's Encrypt contact)
+ACTION=""          # install | list | add | delete | uninstall (empty = ask)
+ADD_SPEC=""        # --add=name=address
+DELETE_NAME=""
 ASSUME_YES=0
 DRY_RUN=0
-UNINSTALL=0
 PURGE=0
 
-# Host ports (Pi-hole runs on the host network). DNS is always 53.
+# Host ports. DNS is always 53. Pi-hole runs on the host network; the proxy
+# takes 80/443 for the app names, so Pi-hole's own admin page moves to 8080.
 # Unbound listens on 127.0.0.1 only: nothing but Pi-hole can reach it.
-P_WEB=80; P_WEBS=443; P_UNBOUND=5335
-PORT_VARS=(P_WEB P_WEBS P_UNBOUND)
+P_HTTP=80; P_HTTPS=443; P_NPM=81; P_WEB=8080; P_WEBS=8443; P_UNBOUND=5335
+PORT_VARS=(P_HTTP P_HTTPS P_NPM P_WEB P_WEBS P_UNBOUND)   # earlier ones win a clash
 
 # ── Blocklists ────────────────────────────────────────────────────────────────
 HG="https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock"
@@ -120,14 +134,17 @@ else
   C_YELLOW=""; C_RED=""; C_GRAY=""; IS_TTY=0
 fi
 
+NPM_PASS=""
 STEP=0
-TOTAL_STEPS=9
+TOTAL_STEPS=10
 CURRENT_STEP="starting"
 
 # Logs may be attached to public GitHub issues: the password is masked, colours stripped.
 log() {
   local m="$*"
   [[ ${#APP_PASS} -ge 4 ]] && m=${m//"$APP_PASS"/***}
+  [[ ${#NPM_PASS} -ge 4 ]] && m=${m//"$NPM_PASS"/***}
+  [[ ${#CF_TOKEN} -ge 4 ]] && m=${m//"$CF_TOKEN"/***}
   printf '[%s] %s\n' "$(date +%H:%M:%S)" "$(sed -E 's/\x1b\[[0-9;]*m//g' <<<"$m")" >>"$LOG_FILE"
 }
 say()  { printf '%s\n' "$*"; log "$*"; }
@@ -152,7 +169,7 @@ banner() {
     |___/\__,_|\__,_|\___/   |_| |_|\___/|_| |_| |_|\___|_|\__,_|_.__/
 EOF
   printf '%s\n' "$C_RESET"
-  printf '    %s❯%s %sPi-hole%s installer %sv%s · Ubuntu / Debian%s\n\n' \
+  printf '    %s❯%s %sPi-hole + Unbound + Nginx Proxy Manager%s %sv%s · Ubuntu / Debian%s\n\n' \
     "$C_GREEN" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_GRAY" "$VERSION" "$C_RESET"
 }
 
@@ -280,6 +297,14 @@ confirm() { # confirm "question" (default yes)
   [[ ${a,,} =~ ^y(es)?$ ]]
 }
 
+confirm_no() { # confirm_no "question" (default no; --yes doesn't say yes to it)
+  local a
+  has_tty || return 1
+  printf '  %s?%s %s %s[y/N]%s ' "$C_PURPLE" "$C_RESET" "$1" "$C_GRAY" "$C_RESET" >/dev/tty
+  IFS= read -r a </dev/tty || true
+  [[ ${a,,} =~ ^y(es)?$ ]]
+}
+
 menu() { # menu "title" default "label|desc" ... → echoes chosen index (1-based)
   local title=$1 def=$2; shift 2
   local n=$# i=1 choice
@@ -310,11 +335,22 @@ menu_index() { # menu_index value option1 option2 ... → 1-based index (1 if no
 # ── Helpers ───────────────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
-sudo homelab · Pi-hole installer v$VERSION
+sudo homelab · Pi-hole + Unbound + Nginx Proxy Manager v$VERSION
 
-Usage: sudo bash pihole.sh [options]
+Usage: sudo bash pihole.sh [action] [options]
+With no action it shows a menu.
 
-  --password=PASS                    Admin password (generated if omitted)
+Actions:
+  --install                          Install, or change the settings of an existing install
+  --list                             List the app names (domains) and where they point
+  --add=NAME=ADDRESS                 Add an app name, e.g. --add=jellyfin=192.168.1.50:8096
+                                     (ADDRESS: IP:port, host:port, or http(s)://host:port)
+  --delete=NAME                      Delete an app name, e.g. --delete=jellyfin
+  --uninstall                        Remove everything and give port 53 back to the system (keeps data)
+  --purge                            With --uninstall, also delete all data
+
+Install options:
+  --password=PASS                    Admin password for Pi-hole and the proxy (generated if omitted)
   --blocklists=light|balanced|aggressive|classic
                                      Blocklist preset (default balanced)
   --extras=smarttv,devices,doh,gambling,nsfw
@@ -333,17 +369,26 @@ Usage: sudo bash pihole.sh [options]
   --router=IP                        Router to ask for device names (default: gateway)
   --local-domain=NAME                Your network's local domain (default: detected, or lan)
   --no-dnssec                        Don't validate DNSSEC (public upstreams only)
-  --web-port=PORT                    Admin page HTTP port (default 80, or the next free one)
-  --install-dir=PATH                 Compose file + Pi-hole data (default $INSTALL_DIR)
+  --domain=NAME                      Ending for app names: home (default) gives jellyfin.home;
+                                     your own domain (home.example.com) allows trusted HTTPS
+  --cert=local|letsencrypt           HTTPS certificates: this machine's own (default), or
+                                     Let's Encrypt for your own domain (DNS on Cloudflare)
+  --cloudflare-token=TOKEN           Cloudflare API token (Zone · DNS · Edit) for --cert=letsencrypt
+  --email=ADDRESS                    Proxy admin login (default admin@<domain>); with
+                                     Let's Encrypt, a real address for expiry notices
+  --web-port=PORT                    Pi-hole admin page HTTP port (default 8080, or the next free one)
+  --install-dir=PATH                 Compose file + data (default $INSTALL_DIR)
   -y, --yes                          Non-interactive: accept defaults, free port 53 automatically
   --dry-run                          Show what would happen, change nothing
-  --uninstall                        Remove Pi-hole and give port 53 back to the system (keeps data)
-  --purge                            With --uninstall, also delete Pi-hole's data
   -h, --help                         Show this help
 EOF
 }
 
 WEB_PORT_SET=0
+set_action() {
+  [[ -z $ACTION || $ACTION == "$1" ]] || { echo "Choose one action: --$ACTION or --$1" >&2; exit 2; }
+  ACTION=$1
+}
 parse_args() {
   for arg in "$@"; do
     case $arg in
@@ -359,17 +404,29 @@ parse_args() {
       --router=*) ROUTER_IP=${arg#*=} ;;
       --local-domain=*) LOCAL_DOMAIN=${arg#*=} ;;
       --no-dnssec) DNSSEC=0 ;;
+      --domain=*) DOMAIN=${arg#*=}; DOMAIN=${DOMAIN,,}; DOMAIN=${DOMAIN#.} ;;
+      --cert=*) CERT_MODE=${arg#*=} ;;
+      --cloudflare-token=*) CF_TOKEN=${arg#*=} ;;
+      --email=*) ADMIN_EMAIL=${arg#*=} ;;
       --web-port=*) P_WEB=${arg#*=}; WEB_PORT_SET=1 ;;
       --install-dir=*) INSTALL_DIR=${arg#*=} ;;
       -y|--yes) ASSUME_YES=1 ;;
       --dry-run) DRY_RUN=1 ;;
-      --uninstall) UNINSTALL=1 ;;
+      --install) set_action install ;;
+      --list) set_action list ;;
+      --add=*) set_action add; ADD_SPEC=${arg#*=} ;;
+      --add) set_action add ;;
+      --delete=*) set_action delete; DELETE_NAME=${arg#*=} ;;
+      --delete) set_action delete ;;
+      --uninstall) set_action uninstall ;;
       --purge) PURGE=1 ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
     esac
   done
   [[ $P_WEB =~ ^[0-9]+$ ]] && (( P_WEB >= 1 && P_WEB <= 65535 )) || { echo "--web-port must be a port number" >&2; exit 2; }
+  [[ -z $CERT_MODE || $CERT_MODE =~ ^(local|letsencrypt)$ ]] || { echo "--cert must be local or letsencrypt" >&2; exit 2; }
+  (( ! PURGE )) || [[ $ACTION == uninstall ]] || { echo "--purge only goes with --uninstall" >&2; exit 2; }
   return 0
 }
 
@@ -474,7 +531,10 @@ conflicts() { port_owners "$@" | grep -v '^ours|' || true; }   # owners that are
 
 # ── Other ports ───────────────────────────────────────────────────────────────
 port_label() {
-  case $1 in P_WEB) echo "admin page (HTTP)" ;; P_WEBS) echo "admin page (HTTPS)" ;; P_UNBOUND) echo "Unbound resolver (local only)" ;; esac
+  case $1 in
+    P_HTTP) echo "app names (HTTP)" ;; P_HTTPS) echo "app names (HTTPS)" ;; P_NPM) echo "proxy admin page" ;;
+    P_WEB) echo "Pi-hole admin page (HTTP)" ;; P_WEBS) echo "Pi-hole admin page (HTTPS)" ;; P_UNBOUND) echo "Unbound resolver (local only)" ;;
+  esac
 }
 port_needed() { [[ $1 != P_UNBOUND ]] || [[ $UPSTREAM == unbound ]]; }
 port_proto() { [[ $1 == P_UNBOUND ]] && echo both || echo tcp; }   # DNS uses TCP and UDP
@@ -488,7 +548,7 @@ port_taken() { # port_taken port self-var
 
 next_free_port() { # next_free_port var → a free port, preferring the usual alternates
   local var=$1 p tries=0
-  case $var in P_WEB) p=8080 ;; P_WEBS) p=8443 ;; *) p=5336 ;; esac
+  case $var in P_HTTP) p=8880 ;; P_HTTPS) p=8443 ;; P_NPM) p=8181 ;; P_WEB) p=8080 ;; P_WEBS) p=8443 ;; *) p=5336 ;; esac
   while (( tries < 200 )); do
     port_taken "$p" "$var" || { echo "$p"; return 0; }
     p=$((p + 1)); tries=$((tries + 1))
@@ -501,6 +561,10 @@ resolve_port() { # resolve_port VAR "owner label"
   label=$(port_label "$var"); cur=${!var}
   warn "Port $cur ($label) is already used by $owner"
   alt=$(next_free_port "$var") || die "Couldn't find a free port for the $label."
+  case $var in
+    P_HTTP) info "App names still work with https://. Plain http://name would need :$alt (or free port 80 and re-run)." ;;
+    P_HTTPS) info "App names would need the port: https://name:$alt. Freeing port 443 and re-running is better." ;;
+  esac
   if (( DRY_RUN )); then info "Would use port $alt for the $label instead"; printf -v "$var" '%s' "$alt"; return; fi
   case $(menu "What should I do?" 1 \
     "Use $alt|next free port ($owner stays where it is)" \
@@ -522,13 +586,22 @@ resolve_port() { # resolve_port VAR "owner label"
 }
 
 check_other_ports() {
-  local var line moved=0
+  local var prev line moved=0 seen=" "
   for var in "${PORT_VARS[@]}"; do
     port_needed "$var" || continue
-    line=$(conflicts "${!var}" "$(port_proto "$var")" | head -n1)
+    # Two of our own services on one port (e.g. an older install had Pi-hole on
+    # 443, which the proxy needs now): the later one moves.
+    if [[ $seen == *" ${!var} "* ]]; then
+      prev=${!var}
+      printf -v "$var" '%s' "$(next_free_port "$var")"
+      info "The $(port_label "$var") moves from port $prev to ${!var} (port $prev is for the proxy now)"
+      moved=1
+    fi
+    line=$(conflicts "${!var}" "$(port_proto "$var")" | awk "NR == 1")
     if [[ -n $line ]]; then resolve_port "$var" "${line##*|}"; moved=1; fi
+    seen+="${!var} "
   done
-  (( moved )) || ok "Ports $P_WEB / $P_WEBS (admin page)$( [[ $UPSTREAM == unbound ]] && echo " and $P_UNBOUND (Unbound)") are free"
+  (( moved )) || ok "Ports $P_HTTP / $P_HTTPS (app names), $P_NPM (proxy admin), $P_WEB / $P_WEBS (Pi-hole admin)$( [[ $UPSTREAM == unbound ]] && echo " and $P_UNBOUND (Unbound)") are free"
 }
 
 # ── Port 53 ───────────────────────────────────────────────────────────────────
@@ -682,7 +755,9 @@ preflight() {
   command -v ss >/dev/null 2>&1 || die "The 'ss' command is missing (package iproute2)."
   local free_mb
   free_mb=$(df -Pm / | awk 'NR==2 {print $4}')
-  (( free_mb >= 1024 )) || die "Only ${free_mb} MB free on /. Pi-hole needs about 1 GB (image + blocklists)."
+  # Pi-hole ~0.2 GB, the proxy ~1.9 GB, blocklists and logs on top.
+  (( free_mb >= 3072 )) || docker image inspect "$NPM_IMAGE" >/dev/null 2>&1 ||
+    die "Only ${free_mb} MB free on /. Pi-hole + the proxy need about 3 GB (images + blocklists)."
   TZ_NAME=$(detect_tz); ok "Timezone: $TZ_NAME"
   HOST_IP=$(host_ip); ok "Server IP: $HOST_IP"
   local dev
@@ -761,6 +836,15 @@ normalize_choices() {
     [[ $LOCAL_DOMAIN =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "Local domain must look like lan or home.arpa (got '$LOCAL_DOMAIN')."
     [[ -n $LAN_CIDR ]] || die "Couldn't work out your local subnet for device names; use --device-names=no."
   fi
+  is_domain "$DOMAIN" && [[ $DOMAIN != local ]] || die "--domain must look like home, lan or home.example.com (got '$DOMAIN')."
+  [[ $ADMIN_EMAIL =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die "Not a valid email address: '$ADMIN_EMAIL'."
+  if [[ $CERT_MODE == letsencrypt ]]; then
+    [[ $DOMAIN == *.* ]] || die "Let's Encrypt needs a domain you own (like home.example.com), not '$DOMAIN'."
+    [[ -n $CF_TOKEN || ( $(state_get DOMAIN) == "$DOMAIN" && -n $(state_get LE_CERT_ID) ) ]] ||
+      die "Let's Encrypt needs a Cloudflare API token: --cloudflare-token=TOKEN (or use --cert=local)."
+    [[ $ADMIN_EMAIL != admin@"$DOMAIN" ]] || die "Let's Encrypt needs your real email address: --email=you@example.com"
+  fi
+  return 0
 }
 
 # Every list for the current choices, one per line: "<type> <url>", where type is
@@ -791,20 +875,33 @@ vpn_address() {
   local ifc
   for ifc in tailscale0 wg0 zt+; do
     ip -4 -br addr show 2>/dev/null | awk -v p="${ifc%+}" 'index($1, p) == 1 && $3 {split($3, a, "/"); print $1, a[1]; exit}'
-  done | head -n1
+  done | awk "NR == 1"
+}
+
+# Every VPN address of this machine, one "interface ip" per line.
+vpn_ips() {
+  ip -4 -br addr show 2>/dev/null |
+    awk '($1 == "tailscale0" || $1 ~ /^wg/ || $1 ~ /^zt/) && $3 {split($3, a, "/"); print $1, a[1]}'
 }
 
 is_private_ip() { [[ $1 =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|127\.) ]]; }
 
+load_secrets() {
+  [[ -f $INSTALL_DIR/.secrets ]] || return 0
+  [[ -z $APP_PASS ]] && APP_PASS=$(sed -n 's/^APP_PASS=//p' "$INSTALL_DIR/.secrets")
+  [[ -z $NPM_PASS ]] && NPM_PASS=$(sed -n 's/^NPM_PASS=//p' "$INSTALL_DIR/.secrets")
+  return 0
+}
+
 ask_password() {
   if [[ -f $INSTALL_DIR/.secrets && -z $APP_PASS ]]; then
-    APP_PASS=$(sed -n 's/^APP_PASS=//p' "$INSTALL_DIR/.secrets")
+    load_secrets
     [[ -n $APP_PASS ]] && { info "Existing install found: keeping the current admin password"; return; }
   fi
   if [[ -z $APP_PASS ]] && (( ! ASSUME_YES )) && has_tty; then
-    printf '\n  %sAdmin password%s %s(Pi-hole has no usernames: one password protects the admin page)%s\n' \
+    printf '\n  %sAdmin password%s %s(one password for the Pi-hole and proxy admin pages)%s\n' \
       "$C_BOLD" "$C_RESET" "$C_GRAY" "$C_RESET" >/dev/tty
-    case $(menu "Password for the Pi-hole admin page" 1 \
+    case $(menu "Admin password" 1 \
       "Auto-generate|a strong random password, shown now and saved for you" \
       "Type my own|at least 8 characters") in
       2)
@@ -828,6 +925,57 @@ ask_password() {
   fi
 }
 
+# App names: an ending (jellyfin.home) and how HTTPS certificates are made.
+is_domain() { [[ $1 =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$ ]]; }
+
+choose_names() {
+  local prev prev_cert
+  prev=$(state_get DOMAIN); prev_cert=$(state_get CERT_MODE)
+  [[ -z $ADMIN_EMAIL ]] && ADMIN_EMAIL=$(state_get ADMIN_EMAIL)
+  if [[ -z $DOMAIN ]]; then
+    case $(menu "Names for your apps (https://jellyfin.home instead of $HOST_IP:8096)" "$( [[ $prev_cert == letsencrypt || $prev == *.*.* ]] && echo 2 || echo 1)" \
+      "Local names|<app>.home: works on every device that uses this Pi-hole (recommended)" \
+      "My own domain|<app>.home.example.com: real certificates, no browser warnings (domain on Cloudflare)") in
+      1)
+        while :; do
+          DOMAIN=$(ask "Ending for the names (home, lan, home.arpa…)" "$( [[ -n $prev && $prev_cert != letsencrypt ]] && echo "$prev" || echo home)")
+          DOMAIN=${DOMAIN,,}; DOMAIN=${DOMAIN#.}
+          is_domain "$DOMAIN" && [[ $DOMAIN != local ]] && break
+          warn "Use letters, numbers and dashes, like home or home.arpa (.local is reserved for other things)."
+        done
+        CERT_MODE=local ;;
+      2)
+        while :; do
+          DOMAIN=$(ask "Your domain, or a part of it just for home (e.g. home.example.com)" "$( [[ $prev == *.* ]] && echo "$prev")")
+          DOMAIN=${DOMAIN,,}; DOMAIN=${DOMAIN#.}
+          is_domain "$DOMAIN" && [[ $DOMAIN == *.* ]] && break
+          warn "Type a domain you own, like home.example.com."
+        done
+        [[ -z $CERT_MODE ]] && case $(menu "HTTPS certificates for *.$DOMAIN" "$( [[ $prev_cert == local ]] && echo 2 || echo 1)" \
+          "Let's Encrypt|trusted everywhere. Needs the domain's DNS on Cloudflare and an API token" \
+          "This machine's own|works offline; each device must trust it once to avoid warnings") in
+          1) CERT_MODE=letsencrypt ;; 2) CERT_MODE=local ;;
+        esac ;;
+    esac
+  fi
+  DOMAIN=${DOMAIN,,}
+  [[ -z $CERT_MODE ]] && CERT_MODE=${prev_cert:-local}
+  if [[ $CERT_MODE == letsencrypt ]]; then
+    # A certificate already issued for this domain is reused: no token needed again.
+    if [[ -z $CF_TOKEN && ( $prev != "$DOMAIN" || -z $(state_get LE_CERT_ID) ) ]]; then
+      if (( ! ASSUME_YES )) && has_tty; then
+        info "Cloudflare → My Profile → API Tokens → Create Token → \"Edit zone DNS\" template, for the zone of $DOMAIN."
+        CF_TOKEN=$(ask_secret "Cloudflare API token:")
+      fi
+    fi
+    if [[ -z $ADMIN_EMAIL || $ADMIN_EMAIL == admin@* ]]; then
+      ADMIN_EMAIL=$(ask "Your email (Let's Encrypt expiry notices, and the proxy login)" "")
+    fi
+  fi
+  [[ -z $ADMIN_EMAIL ]] && ADMIN_EMAIL="admin@$DOMAIN"
+  return 0
+}
+
 choose_options() {
   step "Choose your setup"
   local prev vpn
@@ -837,6 +985,8 @@ choose_options() {
     (( WEB_PORT_SET )) || { prev=$(state_get P_WEB); [[ $prev =~ ^[0-9]+$ ]] && P_WEB=$prev; }
     prev=$(state_get P_WEBS); [[ $prev =~ ^[0-9]+$ ]] && P_WEBS=$prev
     prev=$(state_get P_UNBOUND); [[ $prev =~ ^[0-9]+$ ]] && P_UNBOUND=$prev
+    local v
+    for v in P_HTTP P_HTTPS P_NPM; do prev=$(state_get "$v"); [[ $prev =~ ^[0-9]+$ ]] && printf -v "$v" '%s' "$prev"; done
   fi
 
   # ── What to block ──
@@ -884,12 +1034,16 @@ choose_options() {
   # ── Who can use it ──
   if [[ -z $DNS_ACCESS ]]; then
     vpn=$(vpn_address)
-    case $(menu "Who should be able to use this Pi-hole?" "$(menu_index "$(state_get DNS_ACCESS)" local all)" \
+    prev=$(state_get DNS_ACCESS)
+    # On a VPN (and not on a public address), devices reaching it through the VPN need "any network".
+    [[ -z $prev && -n $vpn ]] && is_private_ip "$HOST_IP" && prev=all
+    case $(menu "Who should be able to use this Pi-hole?" "$(menu_index "${prev:-local}" local all)" \
       "Local network|devices on your home network only (recommended)" \
       "Any network|also VPNs (Tailscale, WireGuard…) and other subnets. Never forward port 53 to the internet") in
       1) DNS_ACCESS=local ;; 2) DNS_ACCESS=all ;;
     esac
     [[ $DNS_ACCESS == local && -n $vpn ]] && info "This machine is on a VPN (${vpn%% *}). Pick 'Any network' if devices should use Pi-hole through it."
+    [[ $DNS_ACCESS == all && -n $vpn ]] && info "Devices on ${vpn%% *} can use Pi-hole and the app names through ${vpn#* }."
   fi
   if [[ $DNS_ACCESS == all ]] && ! is_private_ip "$HOST_IP"; then
     warn "$HOST_IP is a public address: with 'Any network', anyone on the internet could use this DNS server."
@@ -917,6 +1071,7 @@ choose_options() {
       esac
     fi
   fi
+  choose_names
   normalize_choices
 
   ask_password
@@ -930,7 +1085,10 @@ choose_options() {
   for e in ${EXTRAS//,/ }; do extras_txt+="${extras_txt:+, }$(extra_label "$e" | sed 's/ (.*//')"; done
   for e in ${ALLOWLISTS//,/ }; do allow_txt+="${allow_txt:+, }$(allow_label "$e" | sed 's/ (.*//')"; done
   printf '    %-16s %s\n' "Pi-hole" "$IMAGE (Docker, host network)" \
-    "Admin page" "http://$HOST_IP:$P_WEB/admin" \
+    "Admin page" "http://$HOST_IP:$P_WEB/admin  ·  https://pihole.$DOMAIN" \
+    "Proxy" "Nginx Proxy Manager · admin http://$HOST_IP:$P_NPM  ·  https://proxy.$DOMAIN" \
+    "App names" "<app>.$DOMAIN on ports $P_HTTP/$P_HTTPS · login $ADMIN_EMAIL" \
+    "Certificates" "$( [[ $CERT_MODE == letsencrypt ]] && echo "Let's Encrypt for *.$DOMAIN (Cloudflare DNS)" || echo "this machine's own certificate authority")" \
     "Blocklists" "$(preset_label "$BLOCKLISTS")" \
     "Extra lists" "${extras_txt:-none}${CUSTOM_LISTS:+ + $(wc -w <<<"${CUSTOM_LISTS//,/ }") of your own}" \
     "Allowlists" "${allow_txt:-none}" \
@@ -941,7 +1099,7 @@ choose_options() {
     "Data" "$INSTALL_DIR"
   local o
   for o in "${P53_OWNERS[@]}"; do printf '    %-16s %s\n' "Port 53" "free it from ${o##*|}"; done
-  log "Plan: blocklists=$BLOCKLISTS extras=${EXTRAS:-none} allow=${ALLOWLISTS:-none} custom=${CUSTOM_LISTS:-none} refresh=$REFRESH upstream=$UPSTREAM dnssec=$DNSSEC access=$DNS_ACCESS names=$DEVICE_NAMES router=$ROUTER_IP cidr=$LAN_CIDR domain=$LOCAL_DOMAIN web=$P_WEB/$P_WEBS unbound=$P_UNBOUND port53=${P53_OWNERS[*]:-free}"
+  log "Plan: blocklists=$BLOCKLISTS extras=${EXTRAS:-none} allow=${ALLOWLISTS:-none} custom=${CUSTOM_LISTS:-none} refresh=$REFRESH upstream=$UPSTREAM dnssec=$DNSSEC access=$DNS_ACCESS names=$DEVICE_NAMES router=$ROUTER_IP cidr=$LAN_CIDR domain=$LOCAL_DOMAIN web=$P_WEB/$P_WEBS proxy=$P_HTTP/$P_HTTPS/$P_NPM domain=$DOMAIN cert=$CERT_MODE email=$ADMIN_EMAIL unbound=$P_UNBOUND port53=${P53_OWNERS[*]:-free}"
   printf '\n'
 
   if (( DRY_RUN )); then info "Dry run: nothing was changed."; exit 0; fi
@@ -995,7 +1153,7 @@ install_deps() {
   step "Installing Docker"
   export DEBIAN_FRONTEND=noninteractive
   local need=() pkg
-  for pkg in curl jq ca-certificates gnupg iproute2; do
+  for pkg in curl jq ca-certificates gnupg iproute2 openssl; do
     dpkg -s "$pkg" >/dev/null 2>&1 || need+=("$pkg")
   done
   if (( ${#need[@]} )); then
@@ -1019,6 +1177,7 @@ install_deps() {
   # Download while this machine's DNS is still untouched.
   run "Downloading Pi-hole" docker pull "$IMAGE"
   [[ $UPSTREAM == unbound ]] && run "Downloading Unbound" docker pull "$UNBOUND_IMAGE"
+  run "Downloading Nginx Proxy Manager (about 1.9 GB on disk)" docker pull "$NPM_IMAGE"
   return 0
 }
 
@@ -1060,9 +1219,28 @@ EOF
     restart: unless-stopped
 EOF
   fi
-  ( umask 077; printf 'APP_PASS=%s\n' "$APP_PASS" >"$INSTALL_DIR/.secrets" )
+  cat >>"$INSTALL_DIR/docker-compose.yml" <<EOF
+
+  # Reverse proxy: https://<app>.$DOMAIN → the app's address. Admin page on port $P_NPM.
+  proxy:
+    image: $NPM_IMAGE
+    ports:
+      - "${P_HTTP}:80"
+      - "${P_HTTPS}:443"
+      - "${P_NPM}:81"
+    environment:
+      TZ: "$TZ_NAME"
+    volumes:
+      - ./proxy/data:/data
+      - ./proxy/letsencrypt:/etc/letsencrypt
+    depends_on:
+      - pihole   # an older install may still hold port 443: let Pi-hole move first
+    restart: unless-stopped
+EOF
+  [[ -z $NPM_PASS ]] && NPM_PASS=$APP_PASS   # a fresh proxy gets the same password
+  save_secrets
   local v
-  for v in P_WEB P_WEBS P_UNBOUND BLOCKLISTS EXTRAS ALLOWLISTS CUSTOM_LISTS REFRESH UPSTREAM DNSSEC DNS_ACCESS DEVICE_NAMES ROUTER_IP LOCAL_DOMAIN; do
+  for v in P_WEB P_WEBS P_UNBOUND P_HTTP P_HTTPS P_NPM BLOCKLISTS EXTRAS ALLOWLISTS CUSTOM_LISTS REFRESH UPSTREAM DNSSEC DNS_ACCESS DEVICE_NAMES ROUTER_IP LOCAL_DOMAIN CERT_MODE; do   # ADMIN_EMAIL: saved once the proxy accepts it
     state_set "$v" "${!v}"
   done
 }
@@ -1090,7 +1268,7 @@ start_pihole() {
   write_files
   ok "Wrote $INSTALL_DIR/docker-compose.yml"
   LOGS_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)   # the wait step shows only this start's log
-  run "Starting the container$( [[ $UPSTREAM == unbound ]] && echo s)" dc up -d --remove-orphans
+  run "Starting the containers" dc up -d --remove-orphans
   local first=""
   [[ -f $INSTALL_DIR/etc-pihole/gravity.db ]] || first=" (first start downloads the blocklists: a few minutes)"
   run "Waiting for Pi-hole$first" wait_pihole
@@ -1165,7 +1343,7 @@ WantedBy=timers.target
 EOF
     systemctl daemon-reload
     systemctl enable --now "$GRAVITY_UNIT.timer"
-    systemctl list-timers "$GRAVITY_UNIT.timer" --no-pager | head -n2
+    systemctl list-timers "$GRAVITY_UNIT.timer" --no-pager --no-legend
   else
     remove_refresh
     echo "Weekly: Pi-hole's built-in schedule"
@@ -1224,6 +1402,507 @@ configure() {
   else
     ok "Blocklist database is up to date"
   fi
+}
+
+# ── Proxy & app names ─────────────────────────────────────────────────────────
+# Nginx Proxy Manager's API (http://127.0.0.1:$P_NPM/api) holds the app names: each
+# proxy host is one name → address. Pi-hole gets a DNS record for every name that
+# ends in .$DOMAIN, pointing at this machine (its LAN address, plus its VPN
+# addresses: Pi-hole answers each network with the matching one).
+NPM_TOKEN=""
+DNS_FILE_NAME=dns-records   # the records this script wrote to Pi-hole last time
+
+save_secrets() { ( umask 077; printf 'APP_PASS=%s\nNPM_PASS=%s\n' "$APP_PASS" "$NPM_PASS" >"$INSTALL_DIR/.secrets" ); }
+
+npm_api() { # npm_api METHOD PATH [json | form:field=@file ...] → response body; fails on an HTTP error
+  local m=$1 path=$2 out code f; shift 2
+  out=$( {
+      ckv url "http://127.0.0.1:$P_NPM/api$path"
+      ckv request "$m"
+      [[ -n $NPM_TOKEN ]] && ckv header "Authorization: Bearer $NPM_TOKEN"
+      if [[ ${1:-} == form:* ]]; then for f in "$@"; do ckv form "${f#form:}"; done
+      elif [[ -n ${1:-} ]]; then ckv header "Content-Type: application/json"; ckv data "$1"; fi
+    } | curl -s -m 600 -w '\n%{http_code}' -K - ) || return 1
+  code=${out##*$'\n'}; out=${out%$'\n'*}
+  printf '%s' "$out"
+  [[ $code == 2* ]]
+}
+npm_error() { jq -r '.error.message // empty' <<<"$1" 2>/dev/null | cut -c1-300; }
+
+npm_wait() {
+  local i
+  for i in $(seq 1 120); do
+    [[ $(curl -s -m 5 "http://127.0.0.1:$P_NPM/api/" 2>/dev/null | jq -r '.status // empty' 2>/dev/null) == OK ]] && { echo "The proxy answers on port $P_NPM"; return 0; }
+    sleep 2
+  done
+  echo "The proxy didn't answer on port $P_NPM"
+  return 1
+}
+
+# A fresh proxy has no account yet: create the admin (no default password ever exists).
+npm_first_admin() {
+  if [[ $(curl -s -m 5 "http://127.0.0.1:$P_NPM/api/" | jq -r '.setup') != false ]]; then echo "The proxy admin account exists"; return 0; fi
+  local body resp
+  body=$(jq -nc --arg e "$ADMIN_EMAIL" --rawfile p "$(sfile npw "$NPM_PASS")" \
+    '{name: "Administrator", nickname: "Admin", email: $e, roles: ["admin"], is_disabled: false, auth: {type: "password", secret: $p}}')
+  resp=$(npm_api POST /users "$body") || { echo "Creating the admin failed: $(npm_error "$resp")"; return 1; }
+  echo "Created the proxy admin account ($ADMIN_EMAIL)"
+}
+
+npm_login() { # sets NPM_TOKEN. Tries the chosen email, then the saved one (and updates it).
+  local e body resp id
+  NPM_TOKEN=""
+  for e in "$ADMIN_EMAIL" "$(state_get ADMIN_EMAIL)"; do
+    [[ -n $e ]] || continue
+    body=$(jq -nc --arg e "$e" --rawfile p "$(sfile npw "$NPM_PASS")" '{identity: $e, secret: $p}')
+    resp=$(npm_api POST /tokens "$body") || continue
+    NPM_TOKEN=$(jq -r '.token // empty' <<<"$resp")
+    [[ -n $NPM_TOKEN ]] || continue
+    if [[ $e != "$ADMIN_EMAIL" ]]; then
+      id=$(npm_api GET /users/me | jq -r '.id // empty')
+      if [[ -n $id ]] && npm_api PUT "/users/$id" "$(jq -nc --arg e "$ADMIN_EMAIL" '{email: $e}')" >/dev/null; then
+        log "proxy login email changed from $e to $ADMIN_EMAIL"
+      else ADMIN_EMAIL=$e; fi
+    fi
+    return 0
+  done
+  return 1
+}
+
+npm_connect() { # log in; if the password was changed in the proxy's page, ask for it
+  npm_login && return 0
+  if (( ! ASSUME_YES )) && has_tty; then
+    warn "Couldn't log in to the proxy as $ADMIN_EMAIL with the saved password (changed in its admin page?)."
+    local i
+    for i in 1 2 3; do
+      ADMIN_EMAIL=$(ask "Proxy login email" "$ADMIN_EMAIL")
+      NPM_PASS=$(ask_secret "Proxy password:")
+      if npm_login; then state_set ADMIN_EMAIL "$ADMIN_EMAIL"; save_secrets; return 0; fi
+      warn "That didn't work."
+    done
+  fi
+  return 1
+}
+
+npm_hosts() { npm_api GET /nginx/proxy-hosts; }
+
+# ── Certificates ──
+# Local mode: this machine's own certificate authority, limited (name constraint)
+# to *.$DOMAIN, so trusting it on a device can't be abused for any other site.
+ca_dir() { echo "$INSTALL_DIR/ca"; }
+use_local_ca() { [[ $CERT_MODE != letsencrypt || -z $(state_get LE_CERT_ID) ]]; }
+
+# Devices download the certificate from http://proxy.<domain>/ca.crt (plain HTTP on
+# purpose: they can't trust HTTPS before they have it). It's public, not a secret.
+ca_url() { echo "http://proxy.$DOMAIN$( [[ $P_HTTP != 80 ]] && echo ":$P_HTTP")/ca.crt"; }
+publish_ca() { mkdir -p "$INSTALL_DIR/proxy/data"; install -m 644 "$(ca_dir)/ca.crt" "$INSTALL_DIR/proxy/data/sudohomelab-ca.crt"; }
+ca_fingerprint() { openssl x509 -noout -fingerprint -sha256 -in "$(ca_dir)/ca.crt" 2>/dev/null | sed 's/.*=//'; }
+
+ensure_ca() {
+  local d; d=$(ca_dir)
+  mkdir -p "$d/certs"; chmod 700 "$d"
+  if [[ -f $d/ca.crt && -f $d/ca.key && $(state_get CA_DOMAIN) == "$DOMAIN" ]]; then publish_ca; echo "Certificate authority for *.$DOMAIN exists"; return 0; fi
+  [[ -f $d/ca.crt ]] && echo "Names now end in .$DOMAIN: making a new certificate authority (devices must trust the new one)"
+  rm -f "$d"/certs/* "$d/ca.srl"
+  ( umask 077
+    openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 -keyout "$d/ca.key" -out "$d/ca.crt" \
+      -subj "/O=sudo homelab/CN=sudo homelab $(hostname -s) ($DOMAIN)" \
+      -addext "basicConstraints=critical,CA:true" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -addext "nameConstraints=critical,permitted;DNS:$DOMAIN" 2>/dev/null ) || { echo "openssl couldn't create the certificate authority"; return 1; }
+  install -m 644 "$d/ca.crt" "$INSTALL_DIR/sudohomelab-ca.crt"
+  state_set CA_DOMAIN "$DOMAIN"
+  publish_ca
+  echo "Created a certificate authority for *.$DOMAIN ($INSTALL_DIR/sudohomelab-ca.crt)"
+}
+
+issue_local_cert() { # issue_local_cert fqdn → certs/<fqdn>.crt/.key, valid 825 days (Apple's limit)
+  local d f=$1 rc=0; d=$(ca_dir)
+  ( umask 077
+    openssl req -newkey rsa:2048 -sha256 -nodes -keyout "$d/certs/$f.key" -out "$d/certs/$f.csr" -subj "/CN=$f" 2>/dev/null &&
+      printf 'subjectAltName=DNS:%s\nbasicConstraints=CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' "$f" >"$d/certs/$f.ext" &&
+      openssl x509 -req -sha256 -in "$d/certs/$f.csr" -CA "$d/ca.crt" -CAkey "$d/ca.key" -CAcreateserial \
+        -days 825 -extfile "$d/certs/$f.ext" -out "$d/certs/$f.crt" 2>/dev/null ) || rc=1
+  rm -f "$d/certs/$f.csr" "$d/certs/$f.ext"
+  return "$rc"
+}
+
+npm_upload_cert() { # npm_upload_cert fqdn [existing-id] → certificate id
+  local f=$1 id=${2:-} d; d=$(ca_dir)/certs
+  if [[ -z $id ]]; then
+    id=$(npm_api POST /nginx/certificates "$(jq -nc --arg n "$f" '{provider: "other", nice_name: $n}')" | jq -r '.id // empty')
+    [[ -n $id ]] || return 1
+  fi
+  npm_api POST "/nginx/certificates/$id/upload" "form:certificate=@$d/$f.crt" "form:certificate_key=@$d/$f.key" >/dev/null || return 1
+  echo "$id"
+}
+
+local_cert_id() { # the proxy's id of our own certificate for fqdn, if it has one
+  npm_api GET /nginx/certificates | jq -r --arg n "$1" '[.[] | select(.provider == "other" and .nice_name == $n)][0].id // empty'
+}
+
+cert_for() { # cert_for fqdn → certificate id to use for that name
+  if ! use_local_ca; then state_get LE_CERT_ID; return; fi
+  local id; id=$(local_cert_id "$1")
+  [[ -n $id && -f $(ca_dir)/certs/$1.crt ]] && { echo "$id"; return; }
+  issue_local_cert "$1" && npm_upload_cert "$1" "$id"
+}
+
+# One wildcard certificate covers every app name. The DNS challenge never opens a port.
+request_le() {
+  local id body resp
+  id=$(state_get LE_CERT_ID)
+  if [[ -n $id && $(state_get LE_DOMAIN) == "$DOMAIN" ]] && npm_api GET "/nginx/certificates/$id" >/dev/null; then
+    echo "The Let's Encrypt certificate for *.$DOMAIN exists"; return 0
+  fi
+  state_set LE_CERT_ID ""
+  [[ -n $CF_TOKEN ]] || { echo "No Cloudflare API token given"; return 1; }
+  body=$(jq -nc --arg d "$DOMAIN" --rawfile t "$(sfile cft "$CF_TOKEN")" \
+    '{provider: "letsencrypt", nice_name: ("*." + $d), domain_names: [("*." + $d), $d],
+      meta: {dns_challenge: true, dns_provider: "cloudflare", propagation_seconds: 30,
+             dns_provider_credentials: ("# Cloudflare API token\ndns_cloudflare_api_token=" + $t)}}')
+  if ! resp=$(npm_api POST /nginx/certificates "$body"); then
+    echo "Let's Encrypt failed: $(npm_error "$resp")"
+    echo "Check the Cloudflare token (\"Edit zone DNS\") and that $DOMAIN is in that Cloudflare account."
+    echo "Details: $INSTALL_DIR/proxy/data/logs/letsencrypt.log"
+    return 1
+  fi
+  id=$(jq -r '.id // empty' <<<"$resp")
+  [[ -n $id ]] || { echo "Let's Encrypt returned no certificate"; return 1; }
+  state_set LE_CERT_ID "$id"; state_set LE_DOMAIN "$DOMAIN"
+  echo "Got a Let's Encrypt certificate for *.$DOMAIN"
+}
+
+# Every name under .$DOMAIN uses the right certificate; ours are renewed 30 days before expiry.
+apply_certs() {
+  local id f cur want
+  while read -r id f cur; do
+    if use_local_ca; then
+      want=$(local_cert_id "$f")
+      if [[ -z $want ]]; then
+        want=$(cert_for "$f") || { echo "$f: couldn't make a certificate"; continue; }
+      elif [[ -f $(ca_dir)/certs/$f.crt ]] && ! openssl x509 -checkend 2592000 -noout -in "$(ca_dir)/certs/$f.crt" >/dev/null 2>&1; then
+        issue_local_cert "$f" && npm_upload_cert "$f" "$want" >/dev/null && echo "$f: certificate renewed"
+      fi
+    else
+      want=$(state_get LE_CERT_ID)
+    fi
+    [[ $cur == "$want" ]] && continue
+    npm_api PUT "/nginx/proxy-hosts/$id" "$(jq -nc --argjson c "$want" '{certificate_id: $c}')" >/dev/null &&
+      echo "$f: certificate updated"
+  done < <(npm_hosts | jq -r --arg s ".$DOMAIN" '.[] | select(.domain_names[0] | endswith($s)) | "\(.id) \(.domain_names[0]) \(.certificate_id)"')
+  echo "Certificates are up to date"
+}
+
+# ── Names ──
+add_host() { # add_host fqdn scheme host port [nginx-config] → creates the proxy host
+  local f=$1 cert body resp force=false
+  cert=$(cert_for "$f") || { echo "Couldn't make a certificate for $f"; return 1; }
+  [[ $P_HTTPS == 443 ]] && force=true   # http:// → https:// (only when HTTPS is on its usual port)
+  body=$(jq -nc --arg d "$f" --arg s "$2" --arg h "$3" --argjson p "$4" --argjson c "${cert:-0}" \
+    --argjson force "$force" --arg adv "${5:-}" \
+    '{domain_names: [$d], forward_scheme: $s, forward_host: $h, forward_port: $p, certificate_id: $c,
+      ssl_forced: $force, http2_support: true, allow_websocket_upgrade: true, block_exploits: false,
+      caching_enabled: false, hsts_enabled: false, hsts_subdomains: false, access_list_id: 0,
+      meta: {}, locations: [], advanced_config: $adv}')
+  resp=$(npm_api POST /nginx/proxy-hosts "$body") || { echo "The proxy refused $f: $(npm_error "$resp")"; return 1; }
+}
+
+delete_host() { # delete_host id fqdn → removes the proxy host and our certificate for it
+  local cid
+  cid=$(npm_hosts | jq -r --argjson i "$1" '.[] | select(.id == $i) | .certificate_id')
+  npm_api DELETE "/nginx/proxy-hosts/$1" >/dev/null || return 1
+  if [[ $cid =~ ^[1-9][0-9]*$ && $cid == "$(local_cert_id "$2")" ]] &&
+     [[ -z $(npm_hosts | jq -r --argjson c "$cid" '.[] | select(.certificate_id == $c) | .id') ]]; then
+    npm_api DELETE "/nginx/certificates/$cid" >/dev/null || true
+    rm -f "$(ca_dir)/certs/$2.crt" "$(ca_dir)/certs/$2.key"
+  fi
+}
+
+host_line() { # host_line fqdn → "id<TAB>scheme<TAB>host<TAB>port" of that name
+  npm_hosts | jq -r --arg d "$1" '[.[] | select(.domain_names | index($d))][0] // empty | [.id, .forward_scheme, .forward_host, .forward_port] | @tsv'
+}
+
+rename_suffix() { # names under .old move to .$DOMAIN (a re-run that changed the ending)
+  local old=$1 id f s h p adv
+  while IFS=$'\t' read -r id f s h p; do
+    adv=$(npm_hosts | jq -r --argjson i "$id" '.[] | select(.id == $i) | .advanced_config')
+    delete_host "$id" "$f" && add_host "${f%."$old"}.$DOMAIN" "$s" "$h" "$p" "$adv" && echo "$f → ${f%."$old"}.$DOMAIN"
+  done < <(npm_hosts | jq -r --arg s ".$old" '.[] | select(.domain_names[0] | endswith($s)) | [.id, .domain_names[0], .forward_scheme, .forward_host, .forward_port] | @tsv')
+  return 0
+}
+
+ensure_default_hosts() {
+  # Pi-hole's page lives under /admin: send the bare name there.
+  [[ -n $(host_line "pihole.$DOMAIN") ]] ||
+    add_host "pihole.$DOMAIN" http "$(state_get GATEWAY_IP)" "$P_WEB" 'location = / { return 302 /admin/; }'
+  # The proxy's own admin page, from inside its container. It also hands out the
+  # certificate over plain HTTP, so it isn't forced to HTTPS (its admin page is
+  # plain HTTP on port $P_NPM anyway).
+  local line adv='location = /ca.crt { default_type application/x-x509-ca-cert; alias /data/sudohomelab-ca.crt; }'
+  [[ -n $(host_line "proxy.$DOMAIN") ]] || add_host "proxy.$DOMAIN" http 127.0.0.1 81 "$adv"
+  line=$(host_line "proxy.$DOMAIN")
+  npm_api PUT "/nginx/proxy-hosts/${line%%$'\t'*}" "$(jq -nc --arg a "$adv" '{advanced_config: $a, ssl_forced: false}')" >/dev/null
+  echo "pihole.$DOMAIN and proxy.$DOMAIN are set up"
+}
+
+# Apps on this machine itself: the proxy reaches them through its network's gateway
+# (its nginx resolves names at request time and ignores /etc/hosts, so
+# host.docker.internal can't be used). The gateway can change on a reinstall,
+# so names pointing at the old one are moved (retarget_gateway).
+host_gateway() {
+  docker network inspect "${PROJECT}_default" -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' 2>/dev/null |
+    tr ' ' '\n' | awk '/^[0-9.]+$/ {print; exit}'
+}
+retarget_gateway() {
+  local gw old id
+  gw=$(host_gateway); [[ -n $gw ]] || { echo "Couldn't find the proxy's network gateway"; return 1; }
+  old=$(state_get GATEWAY_IP)
+  while read -r id; do
+    npm_api PUT "/nginx/proxy-hosts/$id" "$(jq -nc --arg h "$gw" '{forward_host: $h}')" >/dev/null && echo "proxy host $id → $gw"
+  done < <(npm_hosts | jq -r --arg o "${old:-none}" --arg g "$gw" '.[] | select(.forward_host == $o or .forward_host == "host.docker.internal") | select(.forward_host != $g) | .id')
+  state_set GATEWAY_IP "$gw"
+  echo "Apps on this machine are reached through $gw"
+}
+
+# This machine's addresses: LAN first, then any VPN (Tailscale, WireGuard, ZeroTier).
+server_addrs() { { echo "$HOST_IP"; vpn_ips | awk '{print $2}'; } | awk 'NF && !seen[$0]++'; }
+
+app_names() { # every proxy name under .$DOMAIN
+  npm_hosts | jq -r --arg s ".$DOMAIN" '.[] | select(.enabled != false) | .domain_names[] | select(endswith($s))' | sort -u
+}
+
+ftl_hosts() { # Pi-hole's local DNS records, one per line
+  px pihole-FTL --config dns.hosts | sed -E 's/^\[ ?//; s/ ?\]$//; s/, /\n/g' | awk NF
+}
+
+# Pi-hole's records = the ones you added yourself + ours (re-made from the proxy's
+# names every time, so addresses that changed or a VPN added later are picked up).
+sync_dns() {
+  local file="$INSTALL_DIR/$DNS_FILE_NAME" old="" line ip cur want json
+  local -a names keep=() new=()
+  mapfile -t names < <(app_names)
+  [[ -f $file ]] && old=$(<"$file")
+  cur=$(ftl_hosts)
+  while IFS= read -r line; do
+    [[ -n $line ]] && ! grep -qxF -- "$line" <<<"$old" && keep+=("$line")
+  done <<<"$cur"
+  if (( ${#names[@]} )); then
+    for ip in $(server_addrs); do new+=("$ip ${names[*]}"); done
+  fi
+  want=$(printf '%s\n' "${keep[@]}" "${new[@]}" | awk NF)
+  if [[ $cur != "$want" ]]; then
+    json=$(printf '%s\n' "${keep[@]}" "${new[@]}" | awk NF | jq -R . | jq -sc .)
+    px pihole-FTL --config dns.hosts "$json" >/dev/null
+  fi
+  printf '%s\n' "${new[@]}" | awk NF >"$file"
+  echo "DNS: ${#names[@]} name(s) → $(server_addrs | paste -sd' ' -)"
+}
+
+# ── Addresses people type ──
+parse_target() { # "192.168.1.50:8096", "nas.lan:5000", "https://host:8006" → T_SCHEME T_HOST T_PORT T_PROBE
+  local t=${1,,} h p=""
+  t=${t#"${t%%[![:space:]]*}"}; t=${t%"${t##*[![:space:]]}"}   # trim
+  [[ -n $t && $t != *[[:space:]]* ]] || return 1
+  T_SCHEME=""
+  case $t in http://*) T_SCHEME=http; t=${t#http://} ;; https://*) T_SCHEME=https; t=${t#https://} ;; esac
+  t=${t%%/*}
+  h=$t
+  [[ $t == *:* ]] && { h=${t%:*}; p=${t##*:}; }
+  [[ $h =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
+  [[ -z $p ]] && { [[ $T_SCHEME == https ]] && p=443 || p=80; }
+  [[ $p =~ ^[0-9]+$ ]] && (( p >= 1 && p <= 65535 )) || return 1
+  T_HOST=$h; T_PORT=$p; T_PROBE=$h
+  # The proxy runs in a container: "localhost" there is the container itself.
+  case $h in localhost|127.*) T_HOST=$(state_get GATEWAY_IP); T_HOST=${T_HOST:-$(host_gateway)}; T_PROBE=127.0.0.1 ;; esac
+  return 0
+}
+
+probe_target() { # finds out http or https (if not given); fails if nothing answers
+  local c
+  if [[ $T_SCHEME != http ]]; then
+    c=$(curl -sk -o /dev/null -m 6 -w '%{http_code}' "https://$T_PROBE:$T_PORT/" 2>/dev/null || true)
+    [[ $c != 000 ]] && { T_SCHEME=https; return 0; }
+  fi
+  if [[ $T_SCHEME != https ]]; then
+    c=$(curl -s -o /dev/null -m 6 -w '%{http_code}' "http://$T_PROBE:$T_PORT/" 2>/dev/null || true)
+    [[ $c != 000 ]] && { T_SCHEME=http; return 0; }
+  fi
+  [[ -z $T_SCHEME ]] && T_SCHEME=http
+  return 1
+}
+
+port_app() { # a name suggestion for well-known ports
+  case $1 in
+    8096) echo jellyfin ;; 32400) echo plex ;; 5055) echo requests ;; 7878) echo radarr ;; 8989) echo sonarr ;;
+    9696) echo prowlarr ;; 8686) echo lidarr ;; 6767) echo bazarr ;; 8265) echo tdarr ;; 8085) echo sabnzbd ;;
+    8123) echo homeassistant ;; 9443) echo portainer ;; 8006) echo proxmox ;; 3001) echo uptime ;; 8090) echo beszel ;;
+    2283) echo photos ;; 8384) echo syncthing ;; 13378) echo audiobooks ;; 5678) echo n8n ;; 7575) echo homarr ;;
+  esac
+}
+
+clean_name() { # "Jellyfin", "jellyfin.home" → jellyfin (empty if invalid)
+  local n=${1,,}
+  n=${n//[[:space:]]/}; n=${n%."$DOMAIN"}; n=${n%.}
+  [[ $n =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] && echo "$n"
+  return 0
+}
+
+name_url() { [[ $P_HTTPS == 443 ]] && echo "https://$1" || echo "https://$1:$P_HTTPS"; }
+show_target() { # proxy target as people know it
+  if [[ $2 == 127.0.0.1 || $2 == host.docker.internal || $2 == "$(state_get GATEWAY_IP)" ]]; then echo "$1://this server:$3"
+  else echo "$1://$2:$3"; fi
+}
+
+name_code() { # name_code fqdn ip [path] → HTTP status of https://fqdn/path through the proxy at ip
+  local ca=()
+  use_local_ca && ca=(--cacert "$(ca_dir)/ca.crt")
+  curl -s -o /dev/null -m 15 -w '%{http_code}' "${ca[@]}" --resolve "$1:$P_HTTPS:$2" "https://$1:$P_HTTPS${3:-/}" 2>/dev/null || true
+}
+
+check_name() { # check_name fqdn [path] → prints what works
+  local ans code i
+  for i in 1 2 3 4 5 6 7 8 9 10; do   # Pi-hole reloads its records a moment after a change
+    ans=$(px dig +short +time=2 +tries=1 @"$HOST_IP" "$1" A 2>/dev/null | awk 'NR == 1' || true)
+    [[ $ans == "$HOST_IP" ]] && break
+    sleep 1
+  done
+  if [[ $ans == "$HOST_IP" ]]; then ok "$1 → $HOST_IP (Pi-hole answers it)"
+  else err "Pi-hole answered '${ans:-nothing}' for $1 instead of $HOST_IP"; return 1; fi
+  code=$(name_code "$1" "$HOST_IP" "${2:-/}")
+  case $code in
+    2*|3*|401|403) ok "$(name_url "$1") opens (HTTP $code, trusted certificate)" ;;
+    502|504) warn "$(name_url "$1") reaches the proxy, but the app didn't answer (HTTP $code). Is it running?" ;;
+    000) err "$(name_url "$1") didn't answer, or its certificate wasn't trusted"; return 1 ;;
+    *) ok "$(name_url "$1") opens (HTTP $code)" ;;
+  esac
+}
+
+# ── Actions: list / add / delete ──
+load_install() {
+  [[ $EUID -eq 0 ]] || die "Please run as root:  $(run_hint)"
+  [[ -f $INSTALL_DIR/docker-compose.yml ]] || die "Nothing is installed yet. Install first:  $(run_hint " --install")"
+  grep -q '^  proxy:' "$INSTALL_DIR/docker-compose.yml" ||
+    die "This install doesn't have the proxy yet. Re-run the installer (Install) to add it:  $(run_hint " --install")"
+  local v val
+  for v in P_WEB P_WEBS P_UNBOUND P_HTTP P_HTTPS P_NPM DOMAIN CERT_MODE ADMIN_EMAIL DNS_ACCESS UPSTREAM; do
+    val=$(state_get "$v"); [[ -n $val ]] && printf -v "$v" '%s' "$val"
+  done
+  [[ -n $DOMAIN ]] || die "No app-name ending saved. Re-run the installer (Install) first."
+  load_secrets
+  HOST_IP=$(host_ip)
+  [[ $(docker inspect -f '{{.State.Running}}' "$(dc ps -q proxy 2>/dev/null)" 2>/dev/null) == true ]] ||
+    die "The proxy isn't running. Start it:  cd $INSTALL_DIR && sudo docker compose up -d"
+  npm_wait >/dev/null || die "The proxy doesn't answer on port $P_NPM."
+  npm_connect || die "Couldn't log in to the proxy (http://$HOST_IP:$P_NPM)."
+}
+
+list_domains() {
+  local rows f s h p n=0
+  rows=$(npm_hosts | jq -r '.[] | [.domain_names[0], .forward_scheme, .forward_host, (.forward_port | tostring)] | @tsv' | sort)
+  sync_dns >>"$LOG_FILE" 2>&1 || warn "Couldn't update Pi-hole's DNS records"
+  printf '\n  %sApp names%s %s(ending .%s · proxy admin http://%s:%s)%s\n\n' "$C_BOLD" "$C_RESET" "$C_GRAY" "$DOMAIN" "$HOST_IP" "$P_NPM" "$C_RESET"
+  if [[ -z $rows ]]; then info "No names yet. Add one with:  $(run_hint " --add")"; return 0; fi
+  while IFS=$'\t' read -r f s h p; do
+    n=$((n + 1))
+    printf '    %s%-34s%s → %s' "$C_CYAN" "$(name_url "$f")" "$C_RESET" "$(show_target "$s" "$h" "$p")"
+    [[ $f == *."$DOMAIN" ]] || printf '  %s(no DNS: not under .%s)%s' "$C_GRAY" "$DOMAIN" "$C_RESET"
+    printf '\n'
+  done <<<"$rows"
+  printf '\n    %s%d name(s). They answer on %s.%s\n\n' "$C_GRAY" "$n" "$(server_addrs | paste -sd' ' - | sed 's/ /, /g')" "$C_RESET"
+}
+
+add_one() { # add_one name address
+  local name addr=$2 f line
+  name=$(clean_name "$1")
+  [[ -n $name ]] || { err "'$1' isn't a valid name: use letters, numbers and dashes (e.g. jellyfin)."; return 1; }
+  f="$name.$DOMAIN"
+  parse_target "$addr" || { err "'$addr' isn't an address like 192.168.1.50:8096 or nas.lan:5000."; return 1; }
+  line=$(host_line "$f")
+  local s h p
+  [[ -z $line ]] || { IFS=$'\t' read -r _ s h p <<<"$line"; err "$f already exists → $(show_target "$s" "$h" "$p"). Delete it first to change it."; return 1; }
+  if probe_target; then ok "$T_PROBE:$T_PORT answers ($T_SCHEME)"
+  else
+    warn "Nothing answers on $T_PROBE:$T_PORT yet (app stopped, or a typo?)."
+    (( ASSUME_YES )) || ! has_tty || confirm_no "Add it anyway?" || return 1
+  fi
+  run "Adding $(name_url "$f") → $(show_target "$T_SCHEME" "$T_HOST" "$T_PORT")" add_host "$f" "$T_SCHEME" "$T_HOST" "$T_PORT" || return 1
+  run "Adding $f to Pi-hole" sync_dns
+  check_name "$f" || true
+}
+
+add_domains() {
+  local name addr suggest
+  if [[ -n $ADD_SPEC ]]; then
+    [[ $ADD_SPEC == *=* ]] || die "--add needs NAME=ADDRESS, e.g. --add=jellyfin=192.168.1.50:8096"
+    add_one "${ADD_SPEC%%=*}" "${ADD_SPEC#*=}" || exit 1
+    return 0
+  fi
+  has_tty || die "Give the name and address:  --add=jellyfin=192.168.1.50:8096"
+  while :; do
+    printf '\n  %sAdd an app name%s %s(e.g. 192.168.1.50:8096 → https://jellyfin.%s)%s\n' "$C_BOLD" "$C_RESET" "$C_GRAY" "$DOMAIN" "$C_RESET" >/dev/tty
+    while :; do
+      addr=$(ask "App address (IP:port, host:port or http(s)://…)" "")
+      [[ -n $addr ]] && parse_target "$addr" && break
+      warn "Type the address you open the app with now, like 192.168.1.50:8096."
+    done
+    suggest=$(port_app "$T_PORT")
+    while :; do
+      name=$(clean_name "$(ask "Name (becomes <name>.$DOMAIN)" "$suggest")")
+      [[ -n $name ]] && break
+      warn "Use letters, numbers and dashes, like jellyfin or nas."
+    done
+    add_one "$name" "$addr" || true
+    confirm_no "Add another?" || break
+  done
+}
+
+delete_domains() {
+  local f line id s h p i=1
+  local -a opts=() names=()
+  if [[ -n $DELETE_NAME ]]; then
+    f=${DELETE_NAME,,}
+    [[ $f == *.* ]] || f="$f.$DOMAIN"
+  else
+    has_tty || die "Give the name:  --delete=jellyfin"
+    while IFS=$'\t' read -r f s h p; do
+      names+=("$f"); opts+=("$f|→ $(show_target "$s" "$h" "$p")")
+    done < <(npm_hosts | jq -r '.[] | [.domain_names[0], .forward_scheme, .forward_host, (.forward_port | tostring)] | @tsv' | sort)
+    (( ${#names[@]} )) || { info "There are no app names to delete."; return 0; }
+    i=$(menu "Which name should I delete?" $(( ${#names[@]} + 1 )) "${opts[@]}" "Cancel|delete nothing")
+    (( i <= ${#names[@]} )) || { info "Cancelled."; return 0; }
+    f=${names[i - 1]}
+  fi
+  line=$(host_line "$f")
+  [[ -n $line ]] || die "There's no app name $f. See them with:  $(run_hint " --list")"
+  IFS=$'\t' read -r id s h p <<<"$line"
+  [[ $f == pihole."$DOMAIN" || $f == proxy."$DOMAIN" ]] && info "$f is made by the installer: re-running Install adds it back."
+  if [[ -z $DELETE_NAME ]] || (( ! ASSUME_YES )); then
+    confirm "Delete $(name_url "$f") → $(show_target "$s" "$h" "$p")? The app itself isn't touched." || { info "Cancelled."; return 0; }
+  fi
+  run "Deleting $f" delete_host "$id" "$f"
+  run "Removing $f from Pi-hole" sync_dns
+}
+
+# Install step: proxy account, certificates, default names, DNS records.
+setup_names() {
+  step "Setting up app names"
+  run "Waiting for the proxy" npm_wait
+  run "Proxy admin account" npm_first_admin
+  npm_connect || die "Couldn't log in to the proxy (http://$HOST_IP:$P_NPM). Log in there, then re-run."
+  ok "Logged in to the proxy as $ADMIN_EMAIL"
+  state_set ADMIN_EMAIL "$ADMIN_EMAIL"
+  if [[ $CERT_MODE == letsencrypt ]]; then
+    run "Let's Encrypt certificate for *.$DOMAIN (a minute or two)" request_le ||
+      warn "No Let's Encrypt certificate: using this machine's own for now. Fix the token/domain and re-run Install."
+  fi
+  run "Certificate authority" ensure_ca
+  local old; old=$(state_get DOMAIN)
+  [[ -n $old && $old != "$DOMAIN" ]] && run "Moving app names from .$old to .$DOMAIN" rename_suffix "$old"
+  state_set DOMAIN "$DOMAIN"
+  run "Route to apps on this machine" retarget_gateway
+  run "Names for Pi-hole and the proxy" ensure_default_hosts
+  run "Certificates for every name" apply_certs
+  run "DNS records in Pi-hole" sync_dns
 }
 
 api_login_ok() {
@@ -1303,8 +1982,28 @@ verify() {
     else err "No answer on the VPN address ${vpn#* }"; fails=1; fi
   fi
 
+  # App names: Pi-hole answers them, the proxy serves them with a trusted certificate.
+  check_name "pihole.$DOMAIN" /admin/login || fails=1
+  if use_local_ca; then
+    if [[ $(curl -s -m 10 --resolve "proxy.$DOMAIN:$P_HTTP:$HOST_IP" "$(ca_url)" 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//') == "$(ca_fingerprint)" ]]; then
+      ok "Devices can download the certificate from $(ca_url)"
+    else err "$(ca_url) didn't serve the certificate"; fails=1; fi
+  fi
+  if npm_login; then ok "Proxy admin login works (http://$HOST_IP:$P_NPM, $ADMIN_EMAIL)"
+  else err "Couldn't log in to the proxy admin page"; fails=1; fi
+  # Over a VPN the same names answer with the VPN address, so they work away from home.
+  local ifc vip code
+  while read -r ifc vip; do
+    [[ -n $vip && $DNS_ACCESS == all ]] || continue
+    ans=$(px dig +short +time=3 +tries=2 @"$vip" "pihole.$DOMAIN" A 2>/dev/null | head -n1 || true)
+    code=$(name_code "pihole.$DOMAIN" "$vip" /admin/login)
+    if [[ $ans == "$vip" && $code =~ ^(2|3) ]]; then ok "Over $ifc: pihole.$DOMAIN → $vip, and $(name_url "pihole.$DOMAIN") opens"
+    else err "Over $ifc ($vip): pihole.$DOMAIN gave '${ans:-nothing}', HTTPS gave ${code:-nothing}"; fails=1; fi
+  done < <(vpn_ips)
+
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    warn "ufw is active: allow DNS and the admin page with  sudo ufw allow 53 && sudo ufw allow $P_WEB/tcp"
+    warn "ufw is active: allow DNS, the names and the admin pages with"
+    warn "  sudo ufw allow 53 && sudo ufw allow $P_HTTP/tcp && sudo ufw allow $P_HTTPS/tcp && sudo ufw allow $P_NPM/tcp && sudo ufw allow $P_WEB/tcp"
   fi
   (( fails == 0 )) || warn "Some checks failed. Pi-hole is installed; see the log for details: $LOG_FILE"
 }
@@ -1316,20 +2015,27 @@ summary() {
     {
       echo "sudo homelab · Pi-hole ($(date))"
       echo
-      echo "Admin page   http://$ip:$P_WEB/admin"
+      echo "Pi-hole      http://$ip:$P_WEB/admin   ($(name_url "pihole.$DOMAIN"))"
       echo "Password     $APP_PASS"
+      echo "Proxy admin  http://$ip:$P_NPM   ($(name_url "proxy.$DOMAIN"))"
+      echo "Proxy login  $ADMIN_EMAIL"
+      [[ $NPM_PASS == "$APP_PASS" ]] && echo "Proxy pass   (same password)" || echo "Proxy pass   $NPM_PASS"
       echo "DNS server   $ip"
+      use_local_ca && echo "Certificate  $(ca_url)  (install it on your devices)"
     } >"$f" )
 
-  printf '\n  %s%s★ Pi-hole is running!%s\n\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
-  printf '    %s%-12s%s %s%s%s\n' "$C_BOLD" "Admin page" "$C_RESET" "$C_CYAN" "http://$ip:$P_WEB/admin" "$C_RESET"
+  printf '\n  %s%s★ Pi-hole, Unbound and the proxy are running!%s\n\n' "$C_BOLD" "$C_GREEN" "$C_RESET"
+  printf '    %s%-12s%s %s%s%s  %s(or %s)%s\n' "$C_BOLD" "Pi-hole" "$C_RESET" "$C_CYAN" "$(name_url "pihole.$DOMAIN")" "$C_RESET" "$C_GRAY" "http://$ip:$P_WEB/admin" "$C_RESET"
+  printf '    %s%-12s%s %s%s%s  %s(or %s)%s\n' "$C_BOLD" "Proxy admin" "$C_RESET" "$C_CYAN" "$(name_url "proxy.$DOMAIN")" "$C_RESET" "$C_GRAY" "http://$ip:$P_NPM" "$C_RESET"
+  printf '    %s%-12s%s %s\n' "$C_BOLD" "Proxy login" "$C_RESET" "$ADMIN_EMAIL"
   printf '    %s%-12s%s %s%s\n' "$C_BOLD" "Password" "$C_RESET" "$APP_PASS" \
-    "$( [[ ${GENERATED_PASS:-0} == 1 ]] && printf '  %s(generated)%s' "$C_GRAY" "$C_RESET")"
+    "$( [[ ${GENERATED_PASS:-0} == 1 ]] && printf '  %s(generated)%s' "$C_GRAY" "$C_RESET")$( [[ $NPM_PASS != "$APP_PASS" ]] && printf '  %s(proxy: its own, see credentials.txt)%s' "$C_GRAY" "$C_RESET")"
   printf '    %s%-12s%s %s\n' "$C_BOLD" "DNS server" "$C_RESET" "$ip"
   printf '    %s%-12s%s %s domains · %s\n' "$C_BOLD" "Blocking" "$C_RESET" "$(printf "%'d" "${BLOCKED_COUNT:-0}" 2>/dev/null || echo "$BLOCKED_COUNT")" "$(preset_label "$BLOCKLISTS" | sed 's/:.*//')${EXTRAS:+ + ${EXTRAS//,/, }}${ALLOWLISTS:+ · allow: ${ALLOWLISTS//,/, }} · updated $REFRESH"
   printf '    %s%-12s%s %s\n' "$C_BOLD" "Upstream" "$C_RESET" "$(upstream_label)"
   printf '    %s%-12s%s %s\n' "$C_BOLD" "Answers" "$C_RESET" "$( [[ $DNS_ACCESS == local ]] && echo "local network only" || echo "any network")"
   printf '    %s%-12s%s %s\n' "$C_BOLD" "Dev. names" "$C_RESET" "$( [[ $DEVICE_NAMES == yes ]] && echo "from your router ($ROUTER_IP)" || echo "off")"
+  printf '    %s%-12s%s <app>.%s · %s\n' "$C_BOLD" "App names" "$C_RESET" "$DOMAIN" "$(use_local_ca && echo "this machine's own certificates" || echo "Let's Encrypt *.$DOMAIN")"
   printf '    %sSaved%s        %s %s(root only)%s\n' "$C_GRAY" "$C_RESET" "$f" "$C_GRAY" "$C_RESET"
 
   printf '\n  %sNext steps for you%s\n' "$C_BOLD" "$C_RESET"
@@ -1337,17 +2043,32 @@ summary() {
   [[ ${DYNAMIC_IP:-0} == 1 ]] && printf '    %s%d.%s Reserve %s%s%s for this machine in your router (DHCP reservation), so it never changes.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$ip" "$C_RESET"
   printf '    %s%d.%s In your router'"'"'s DHCP/LAN settings, set the DNS server to %s%s%s (and remove any second DNS,\n       or devices will skip Pi-hole). Devices pick it up when they reconnect.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$ip" "$C_RESET"
   printf '    %s%d.%s Turn off any IPv6 DNS your router hands out (or set it to this machine), or devices may skip Pi-hole.\n' "$C_GREEN" $((n++)) "$C_RESET"
-  local vpn
+  if use_local_ca; then
+    printf '    %s%d.%s No browser warnings: on each device open %s%s%s and install it as a trusted certificate\n' \
+      "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$(ca_url)" "$C_RESET"
+    printf '       (it can only vouch for *.%s). iPhone: then Settings → General → About → Certificate Trust Settings.\n' "$DOMAIN"
+    printf '       %sFingerprint (SHA-256): %s%s\n' "$C_GRAY" "$(ca_fingerprint)" "$C_RESET"
+  fi
+  printf '    %s%d.%s Add your apps: run this script again → %sAdd domain%s (address + name), or:\n       %s\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$(run_hint " --add=jellyfin=$ip:8096")"
+  local vpn ts_ip
   vpn=$(vpn_address)
-  if [[ $DNS_ACCESS == all && $vpn == tailscale0* ]]; then
-    printf '    %s%d.%s Tailscale: admin console → DNS → Add nameserver → %s%s%s, and turn on "Override local DNS".\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "${vpn#* }" "$C_RESET"
+  ts_ip=$(vpn_ips | awk '$1 == "tailscale0" {print $2; exit}')
+  if [[ $DNS_ACCESS == all && -n $ts_ip ]]; then
+    printf '    %s%d.%s Tailscale (admin console → DNS → Add nameserver → Custom → %s%s%s):\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$ts_ip" "$C_RESET"
+    printf '       · just the app names: turn on "Restrict to domain" with %s%s%s (split DNS)\n' "$C_BOLD" "$DOMAIN" "$C_RESET"
+    printf '       · ad blocking on all your devices too: leave it unrestricted and turn on "Override DNS servers"\n'
+    printf '       On this machine, keep Tailscale from changing its own DNS:  %ssudo tailscale set --accept-dns=false%s\n' "$C_BOLD" "$C_RESET"
   elif [[ $DNS_ACCESS == all && -n $vpn ]]; then
     printf '    %s%d.%s VPN clients: set %s%s%s as their DNS server.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "${vpn#* }" "$C_RESET"
+  elif [[ -n $vpn ]]; then
+    printf '    %s%d.%s This machine is on a VPN (%s), but Pi-hole only answers the local network. To use it through\n       the VPN, re-run Install and choose "Any network".\n' "$C_GREEN" $((n++)) "$C_RESET" "${vpn%% *}"
   fi
+  printf '    %s%d.%s Added a VPN (Tailscale…) later? Run Install again: the names then answer on it too.\n' "$C_GREEN" $((n++)) "$C_RESET"
   printf '    %s%d.%s Something broke? Admin page → Query Log → find the blocked domain → Allow.\n' "$C_GREEN" $((n++)) "$C_RESET"
   printf '    %s%d.%s YouTube ads can'"'"'t be blocked by DNS (use uBlock Origin in the browser).\n' "$C_GREEN" $((n++)) "$C_RESET"
 
   printf '\n    %sManage:%s    cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"
+  printf '    %sMenu:%s      %s   %s(install · list/add/delete names · uninstall)%s\n' "$C_GRAY" "$C_RESET" "$(run_hint)" "$C_GRAY" "$C_RESET"
   printf '    %sUninstall:%s %s\n' "$C_GRAY" "$C_RESET" "$(run_hint " --uninstall")"
   printf '    %sLog:%s       %s\n' "$C_GRAY" "$C_RESET" "$LOG_FILE"
   local t=$((SECONDS - START_TIME))
@@ -1369,13 +2090,20 @@ restore_resolved() {
 }
 
 uninstall() {
-  banner
+  (( BANNER_SHOWN )) || banner
   [[ $EUID -eq 0 ]] || die "Please run as root (sudo)."
   [[ -f $INSTALL_DIR/docker-compose.yml ]] || die "No Pi-hole from this script found in $INSTALL_DIR."
-  warn "This stops and removes Pi-hole (and Unbound, if installed). Devices using it for DNS lose name lookups"
-  warn "until you point your router back to another DNS server."
-  if (( PURGE )); then warn "--purge: Pi-hole's data (settings, lists, query history) in $INSTALL_DIR will be deleted."
-  else info "Pi-hole's data stays in $INSTALL_DIR (re-run the installer to bring it back)."; fi
+  warn "This stops and removes Pi-hole, Unbound and the proxy. Devices using it for DNS lose name lookups"
+  warn "until you point your router back to another DNS server, and the app names stop working."
+  if (( ! PURGE )) && (( ! ASSUME_YES )) && has_tty; then
+    case $(menu "Keep the settings?" 1 \
+      "Keep them|settings, lists, app names and certificates stay in $INSTALL_DIR for a reinstall" \
+      "Delete them|also delete all settings, app names, certificates and query history") in
+      2) PURGE=1 ;;
+    esac
+  fi
+  if (( PURGE )); then warn "All data in $INSTALL_DIR (settings, lists, app names, certificates, query history) will be deleted."
+  else info "The data stays in $INSTALL_DIR (re-run the installer to bring everything back)."; fi
   confirm "Continue?" || { info "Cancelled. Nothing was changed."; exit 0; }
   run "Removing the containers" dc down --remove-orphans
   run "Removing the daily blocklist update" remove_refresh
@@ -1403,19 +2131,47 @@ main() {
   log "kernel: $(uname -a)"
 
   check_interactive
-  if (( UNINSTALL )); then uninstall; exit 0; fi
+  [[ -z $ACTION ]] && choose_action
+  log "action: $ACTION"
+  case $ACTION in
+    uninstall) uninstall; exit 0 ;;
+    list|add|delete)
+      (( BANNER_SHOWN )) || banner
+      load_install
+      case $ACTION in list) list_domains ;; add) add_domains; list_domains ;; delete) delete_domains; list_domains ;; esac
+      exit 0 ;;
+  esac
 
   START_TIME=$SECONDS
-  banner
+  (( BANNER_SHOWN )) || banner
   preflight
   choose_options
   install_deps
   free_port53
   start_pihole
   configure
+  setup_names
   verify
   summary
   log "install finished"
+}
+
+# No action given: a menu (or install, when there's nobody to ask).
+BANNER_SHOWN=0
+choose_action() {
+  if (( ASSUME_YES )) || ! has_tty; then ACTION=install; return; fi
+  banner; BANNER_SHOWN=1
+  local installed=0 dom
+  [[ -f $INSTALL_DIR/docker-compose.yml ]] && installed=1
+  dom=$(state_get DOMAIN); dom=${dom:-home}
+  case $(menu "What would you like to do?" 1 \
+    "Install|$( (( installed )) && echo "already installed: re-run the setup to change settings" || echo "Pi-hole + Unbound + Nginx Proxy Manager, then pick your settings")" \
+    "List domains|the app names and the address each one points to" \
+    "Add domain|an app's address + a name, e.g. 192.168.1.50:8096 → jellyfin.$dom" \
+    "Delete domain|remove an app name (the app itself isn't touched)" \
+    "Uninstall|remove everything (asks whether to keep the settings)") in
+    1) ACTION=install ;; 2) ACTION=list ;; 3) ACTION=add ;; 4) ACTION=delete ;; 5) ACTION=uninstall ;;
+  esac
 }
 
 main "$@"
