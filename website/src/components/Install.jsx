@@ -53,7 +53,8 @@ function highlight(cmd) {
 
 // available: platforms whose script is already published (undefined = none yet).
 // folder: repo project folder (e.g. Media_Stack) · script: file name without extension
-export function InstallBox({ name, folder, script, supported, available, flags = [], accent }) {
+// notes: optional { uninstall, purge, safe } to replace the media-stack wording.
+export function InstallBox({ name, folder, script, supported, available, flags = [], accent, notes = {} }) {
   const { platform, setPlatform } = usePlatform()
   const p = platformById[platform]
   const ok = supported.includes(platform)
@@ -65,9 +66,9 @@ export function InstallBox({ name, folder, script, supported, available, flags =
   const ACTIONS = [
     { id: 'install', label: 'Install', flags, note: null },
     { id: 'uninstall', label: 'Uninstall', flags: [['uninstall', true]],
-      note: 'Removes the apps but keeps their settings, so reinstalling brings back your logins and wiring.' },
+      note: notes.uninstall || 'Removes the apps but keeps their settings, so reinstalling brings back your logins and wiring.' },
     { id: 'purge', label: 'Uninstall + delete settings', flags: [['uninstall', true], ['purge', true]],
-      note: 'Removes the apps and deletes their settings, logins and API keys.' },
+      note: notes.purge || 'Removes the apps and deletes their settings, logins and API keys.' },
   ]
   const current = published ? ACTIONS.find((a) => a.id === action) : ACTIONS[0]
   const shown = p.cmd(path, current.flags)
@@ -107,7 +108,7 @@ export function InstallBox({ name, folder, script, supported, available, flags =
           </div>
           {danger && (
             <p className="uninstall-note">
-              {current.note} <strong>Your media is never deleted.</strong> It asks before removing anything.
+              {current.note} <strong>{notes.safe || 'Your media is never deleted.'}</strong> It asks before removing anything.
             </p>
           )}
           {available?.length > 0 && !available.includes(platform) && (

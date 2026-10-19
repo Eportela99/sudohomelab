@@ -46,6 +46,27 @@ export const CATEGORIES = [
         { key: 'extras', label: 'Extras', type: 'many', choices: ['lidarr', 'bazarr', 'tdarr'], default: [] },
       ],
       core: ['seerr', 'radarr', 'sonarr', 'prowlarr'],
+      // "How it works" walk-through shown under the stack builder.
+      guide: {
+        intro: 'Each app does one job and hands the result to the next. The installer exchanges the API keys and fills in every address, so the whole chain runs on its own from the first request.',
+        steps: [
+          { title: 'Request', apps: ['seerr'], text: 'You (or anyone you share it with) search for a movie or show in Seerr and press Request. Seerr signs people in with their Jellyfin or Plex account and passes movies to Radarr and series to Sonarr.' },
+          { title: 'Search', apps: ['prowlarr'], text: 'Radarr and Sonarr search your indexers through Prowlarr. You add an indexer once in Prowlarr and it syncs to Radarr, Sonarr and Lidarr automatically.' },
+          { title: 'Grab', apps: ['radarr', 'sonarr'], text: 'Radarr (movies) and Sonarr (TV) pick the best release for your quality settings and send it to your download client, tagged with a category so each app later finds its own downloads.' },
+          { title: 'Download', apps: ['qbittorrent', 'sabnzbd'], text: 'qBittorrent (torrents) and/or SABnzbd (Usenet) download into Active_Downloads. Both share one login with the *arr apps.' },
+          { title: 'Import', apps: ['radarr', 'sonarr'], text: 'When a download finishes, Radarr or Sonarr renames it and puts it in Movies or TV_Shows. Everything sits under one /data folder, so this is an instant hardlink: no copy, no double disk space, and torrents keep seeding.' },
+          { title: 'Watch', apps: ['jellyfin', 'plex'], text: 'Jellyfin or Plex reads the same Movies and TV_Shows folders, so the new title shows up in your library, and Seerr marks the request as available.' },
+          { title: 'Extras', apps: ['bazarr', 'lidarr', 'tdarr'], text: 'Bazarr watches Radarr and Sonarr and downloads subtitles in your languages. Lidarr runs the same flow for music into Music. Tdarr can re-encode your library to save space (off until you choose a Flow).' },
+        ],
+        folders: [
+          ['/data', 'one data folder (default /srv/media), mounted in every container'],
+          ['├─ Active_Downloads', 'qBittorrent / SABnzbd download here'],
+          ['├─ Movies', 'Radarr imports → Jellyfin / Plex'],
+          ['├─ TV_Shows', 'Sonarr imports → Jellyfin / Plex'],
+          ['└─ Music', 'Lidarr imports (extra)'],
+        ],
+        left: 'Left for you: add indexers in Prowlarr, create your Jellyfin/Plex account and libraries, and sign in to Seerr.',
+      },
       // Wiring diagram: [from, to, label]
       wires: [
         ['seerr', 'radarr', 'requests'],
@@ -92,7 +113,70 @@ export const CATEGORIES = [
     accent: '#ff5c8a',
     glyph: '⛨',
     apps: [
-      { id: 'pihole', name: 'Pi-hole', icon: 'pi-hole', desc: 'The classic network-wide ad blocker and DNS server.', ports: [53, 80], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['dns', 'adblock'] },
+      {
+        id: 'pihole', name: 'Pi-hole', icon: 'pi-hole', desc: 'The classic network-wide ad blocker and DNS server, with your own Unbound resolver.', ports: [53, 80], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['dns', 'adblock', 'unbound'],
+        status: 'beta',
+        available: ['linux'],
+        uninstall: {
+          uninstall: 'Removes Pi-hole and Unbound and gives port 53 back to your system. Keeps your settings, lists and password.',
+          purge: 'Removes Pi-hole and Unbound and deletes their settings, lists and query history.',
+          safe: 'Point your router\'s DNS somewhere else first.',
+        },
+        docs: [
+          {
+            title: 'What the script does',
+            text: 'Installs Pi-hole v6 in Docker on the host network, so the query log shows every device\'s real IP. It\'s blocking from the first minute: no setup wizard, no lists to add by hand.',
+            items: [
+              'Checks port 53 first. If systemd-resolved holds it, it turns off only the DNS stub and keeps the host resolving. Other DNS servers (dnsmasq, bind9, another container) are shown to you before anything is stopped.',
+              'Checks the admin and Unbound ports too, and offers the next free one (e.g. 8080 when CasaOS has 80).',
+              'Loads curated HaGeZi blocklists and allowlists, then runs the first update.',
+              'Optionally runs Unbound, your own recursive resolver, so no DNS company sees your lookups.',
+              'Turns on DNSSEC and a daily blocklist update.',
+            ],
+          },
+          {
+            title: 'Choices while installing',
+            text: 'Every question has a default (press Enter) and a flag for unattended installs. Nothing is tied to one network: router, subnet, domain and VPNs are detected on your machine.',
+            items: [
+              '`--password` Admin password: generated, or type your own',
+              '`--blocklists` Light · Balanced (default) · Aggressive · Classic',
+              '`--extras` Smart TV · phone & PC telemetry · DNS bypass · gambling · adult',
+              '`--allowlists` Shopping & affiliate links (default) · link shorteners',
+              '`--upstream` Unbound (default) · Cloudflare · Quad9 · Google · your own IPs',
+              '`--dns-access` Local network only (default), or any network (Tailscale, WireGuard)',
+              '`--device-names` Ask your router for device names in the query log',
+              '`--refresh` Update blocklists daily (default) or weekly',
+            ],
+          },
+          {
+            title: 'How the pieces connect',
+            text: 'Your devices ask Pi-hole on port 53. Blocked domains get 0.0.0.0. Everything else goes to Unbound on 127.0.0.1:5335, which asks the root servers directly and checks DNSSEC. Reverse lookups go to your router, so the log shows names instead of IPs. Unbound only listens on localhost, so only Pi-hole can reach it.',
+          },
+          {
+            title: 'After installing',
+            text: 'The script runs checks (ads blocked, sites resolve, login works, Unbound and DNSSEC answer, device names resolve) and prints your admin URL and password.',
+            items: [
+              'Set the server\'s IP as the DNS server in your router\'s DHCP settings, so every device uses it.',
+              'Admin page: http://<server-ip>/admin (or the port it picked).',
+              'Password: saved in `/opt/sudohomelab/pihole/credentials.txt` (root only).',
+              'Using Tailscale with "any network"? It prints the steps to make Pi-hole your tailnet\'s DNS.',
+            ],
+          },
+          {
+            title: 'Updating & uninstalling',
+            text: 'Run the same command again to change anything: it reads your saved choices, changes only what you changed, and removes only the lists it added. Uninstall gives port 53 back to systemd-resolved exactly as it was.',
+          },
+          {
+            title: 'Troubleshooting',
+            items: [
+              'Logs: `/var/log/sudohomelab/pihole-*.log`',
+              'Preview without changing anything: add `--dry-run`',
+              'A site broke? Open the query log in the admin page, find the blocked domain and allow it.',
+              'All options: `sudo bash pihole.sh --help`',
+            ],
+          },
+        ],
+      },
       { id: 'adguard', name: 'AdGuard Home', icon: 'adguard-home', desc: 'Modern ad blocker with DoH/DoT and per-client rules.', ports: [53, 3000], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['dns', 'adblock'] },
       { id: 'unbound', name: 'Unbound', icon: 'unbound', desc: 'Recursive DNS resolver, so no upstream provider sees your lookups.', ports: [5335], platforms: SERVER, min: { ram: 0.25, cpu: 1 }, tags: ['dns', 'privacy'] },
       { id: 'npm', name: 'Nginx Proxy Manager', icon: 'nginx-proxy-manager', desc: 'Reverse proxy with a GUI and free Let\'s Encrypt certificates.', ports: [80, 443, 81], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['proxy', 'ssl'] },

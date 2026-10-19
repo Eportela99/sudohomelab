@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { appById, categoryById } from '../data/catalog'
 import { platformById } from '../data/platforms'
 import { go, spotlight } from '../hooks'
-import { AppIcon, Icon, StatusBadge } from './Bits'
+import { AppIcon, Icon, Rich, StatusBadge } from './Bits'
 import { InstallBox } from './Install'
 
 const fmtRam = (gb) => (gb < 1 ? `${Math.round(gb * 1024)} MB` : `${gb} GB`)
@@ -111,7 +111,7 @@ export function AppDrawer({ appId, onClose }) {
         {app.note && <div className="drawer-note">ⓘ {app.note}</div>}
 
         <h4 className="drawer-h">Install</h4>
-        <InstallBox name={app.name} folder={cat.folder} script={app.id} supported={app.platforms} accent={cat.accent} />
+        <InstallBox name={app.name} folder={cat.folder} script={app.id} supported={app.platforms} available={app.available} notes={app.uninstall} accent={cat.accent} />
 
         {friends.length > 0 && (
           <>
@@ -128,6 +128,31 @@ export function AppDrawer({ appId, onClose }) {
         )}
 
         <h4 className="drawer-h">Documentation</h4>
+        {app.docs ? (
+          <div className="docs-skeleton">
+            {app.docs.map((d, i) => (
+              <details key={d.title} open={i === 0}>
+                <summary>{d.title}</summary>
+                <div className="doc-body">
+                  {d.text && (
+                    <p>
+                      <Rich text={d.text} />
+                    </p>
+                  )}
+                  {d.items && (
+                    <ul>
+                      {d.items.map((it) => (
+                        <li key={it}>
+                          <Rich text={it} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </details>
+            ))}
+          </div>
+        ) : (
         <div className="docs-skeleton">
           {['What the script does', 'Configuration & environment', 'After installing', 'Updating & uninstalling', 'Troubleshooting'].map((t, i) => (
             <details key={t} open={i === 0}>
@@ -141,6 +166,7 @@ export function AppDrawer({ appId, onClose }) {
             </details>
           ))}
         </div>
+        )}
 
         <div className="drawer-tags">
           {app.tags.map((t) => (

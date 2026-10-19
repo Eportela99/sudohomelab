@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { nodeInfo } from '../data/catalog'
-import { AppIcon, StatusBadge } from './Bits'
+import { AppIcon, Rich, StatusBadge } from './Bits'
 import { InstallBox } from './Install'
 
 const NODE_W = 150
@@ -209,6 +209,54 @@ export function StackBuilder({ stack, folder, accent, supported }) {
         </span>
       </div>
       <InstallBox name={stack.name} folder={folder} script={stack.id} supported={supported} available={stack.available} flags={flags} accent={accent} />
+      {stack.guide && <StackGuide guide={stack.guide} accent={accent} />}
     </section>
+  )
+}
+
+// Step-by-step explanation of how the stack's apps hand work to each other.
+export function StackGuide({ guide, accent }) {
+  return (
+    <div className="guide" style={{ '--accent': accent }}>
+      <h3>How it all works</h3>
+      <p className="guide-intro">{guide.intro}</p>
+      <ol className="guide-steps">
+        {guide.steps.map((s, i) => (
+          <li key={s.title} className="guide-step">
+            <span className="guide-num">{String(i + 1).padStart(2, '0')}</span>
+            <div>
+              <div className="guide-head">
+                <strong>{s.title}</strong>
+                <span className="guide-apps">
+                  {s.apps.map((id) => {
+                    const info = nodeInfo(id)
+                    return (
+                      <span key={id} className="guide-app">
+                        <AppIcon icon={info.icon} name={info.name} size={16} accent={accent} />
+                        {info.name}
+                      </span>
+                    )
+                  })}
+                </span>
+              </div>
+              <p>
+                <Rich text={s.text} />
+              </p>
+            </div>
+          </li>
+        ))}
+      </ol>
+      {guide.folders && (
+        <div className="guide-tree">
+          {guide.folders.map(([path, what]) => (
+            <div key={path}>
+              <code>{path}</code>
+              <span>{what}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {guide.left && <p className="guide-left">{guide.left}</p>}
+    </div>
   )
 }
