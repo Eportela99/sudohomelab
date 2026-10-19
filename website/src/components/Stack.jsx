@@ -170,7 +170,8 @@ export function StackBuilder({ stack, folder, accent, supported }) {
   const [sel, setSel] = useState(() => defaultSelection(stack))
   useEffect(() => setSel(defaultSelection(stack)), [stack])
 
-  const flags = stack.options
+  // flags: false → the script asks its own questions while installing
+  const flags = stack.flags === false ? [] : stack.options
     .map((o) => [o.key, Array.isArray(sel[o.key]) ? sel[o.key].join(',') : sel[o.key]])
     .filter(([, v]) => v)
   const { nodes } = resolveStack(stack, sel)
@@ -208,7 +209,7 @@ export function StackBuilder({ stack, folder, accent, supported }) {
           <strong>0</strong> manual config steps
         </span>
       </div>
-      <InstallBox name={stack.name} folder={folder} script={stack.id} supported={supported} available={stack.available} flags={flags} accent={accent} />
+      <InstallBox name={stack.name} folder={folder} script={stack.script || stack.id} supported={supported} available={stack.available} flags={flags} notes={stack.uninstall} accent={accent} />
       {stack.guide && <StackGuide guide={stack.guide} accent={accent} />}
     </section>
   )

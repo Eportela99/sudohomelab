@@ -10,6 +10,63 @@
 const ALL = ['proxmox', 'linux', 'truenas', 'windows', 'macos']
 const SERVER = ['proxmox', 'linux', 'truenas']
 
+// Shared by Pi-hole, Unbound and Nginx Proxy Manager: one script installs all three.
+const DNS_UNINSTALL = {
+  uninstall: 'Removes Pi-hole, Unbound and the proxy and gives port 53 back to your system. Keeps your settings, lists, app names and certificates.',
+  purge: 'Removes Pi-hole, Unbound and the proxy and deletes their settings, lists, app names, certificates and query history.',
+  safe: 'Point your router\'s DNS somewhere else first.',
+}
+const DNS_DOCS = [
+  {
+    title: 'What the script does',
+    text: 'One script installs Pi-hole v6, Unbound and Nginx Proxy Manager in Docker and connects them. Run it again any time for a menu: Install, List domains, Add domain, Delete domain, Uninstall.',
+    items: [
+      'Checks port 53 first. If systemd-resolved holds it, it turns off only the DNS stub and keeps the host resolving. Other DNS servers are shown to you before anything is stopped.',
+      'Pi-hole blocks ads with curated HaGeZi lists; Unbound looks sites up privately with DNSSEC.',
+      'Nginx Proxy Manager gives apps names like https://jellyfin.home. Pi-hole\'s admin page moves to port 8080 (and https://pihole.home).',
+      'Every port is checked: if something has 80 (CasaOS, a web server) it offers another one.',
+    ],
+  },
+  {
+    title: 'App names (domains)',
+    text: 'Add domain asks for the address you use now (192.168.1.50:8096) and a name (jellyfin). It works out HTTP or HTTPS, creates the route and certificate, adds the DNS record and checks the name opens.',
+    items: [
+      '`--add=jellyfin=192.168.1.50:8096` · `--delete=jellyfin` · `--list`',
+      '`localhost:PORT` means an app on the same server; any LAN address works too (NAS, Proxmox, router).',
+      'Your IP:port addresses keep working: names are an extra way in.',
+    ],
+  },
+  {
+    title: 'Certificates',
+    text: 'Default: the server makes its own certificate authority, limited to your ending (*.home), so trusting it can\'t be misused for other sites. Install it once per device from http://proxy.home/ca.crt. With your own domain on Cloudflare, it can get a Let\'s Encrypt wildcard instead (trusted everywhere).',
+  },
+  {
+    title: 'Over Tailscale',
+    text: 'Choose "Any network" at install. Pi-hole answers the same name with the LAN address at home and the Tailscale address over Tailscale. In the Tailscale admin console, add the server\'s Tailscale IP as a nameserver: restrict it to your ending for just the names (split DNS), or override DNS for ad blocking everywhere.',
+  },
+  {
+    title: 'Choices while installing',
+    items: [
+      '`--password` one password for Pi-hole and the proxy: generated, or type your own',
+      '`--blocklists` Light · Balanced (default) · Aggressive · Classic, plus `--extras` and `--allowlists`',
+      '`--upstream` Unbound (default) · Cloudflare · Quad9 · Google · your own IPs',
+      '`--dns-access` Local network, or any network (Tailscale, WireGuard)',
+      '`--domain` home (default), lan, home.arpa, or your own domain',
+      '`--cert` local (default) or letsencrypt with `--cloudflare-token` and `--email`',
+      '`--device-names`, `--refresh` daily (default) or weekly',
+    ],
+  },
+  {
+    title: 'Troubleshooting',
+    items: [
+      'Logs: `/var/log/sudohomelab/pihole-*.log`; passwords in `/opt/sudohomelab/pihole/credentials.txt`',
+      'A name shows 502? The app isn\'t answering on that address: check it\'s running.',
+      'Browser warning? Install the certificate from http://proxy.<ending>/ca.crt on that device.',
+      'Preview without changing anything: add `--dry-run`. All options: `--help`',
+    ],
+  },
+]
+
 export const CATEGORIES = [
   {
     id: 'media',
@@ -114,83 +171,50 @@ export const CATEGORIES = [
     glyph: '⛨',
     apps: [
       {
-        id: 'pihole', name: 'Pi-hole', icon: 'pi-hole', desc: 'The classic network-wide ad blocker and DNS server, with your own Unbound resolver.', ports: [53, 80], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['dns', 'adblock', 'unbound'],
+        id: 'pihole', name: 'Pi-hole', icon: 'pi-hole', desc: 'Network-wide ad blocker and DNS server. Installs with Unbound and Nginx Proxy Manager, so apps get names like jellyfin.home.', ports: [53, 8080], platforms: SERVER, min: { ram: 1, cpu: 1 }, tags: ['dns', 'adblock', 'unbound', 'proxy'],
         status: 'beta',
         available: ['linux'],
-        uninstall: {
-          uninstall: 'Removes Pi-hole and Unbound and gives port 53 back to your system. Keeps your settings, lists and password.',
-          purge: 'Removes Pi-hole and Unbound and deletes their settings, lists and query history.',
-          safe: 'Point your router\'s DNS somewhere else first.',
-        },
-        docs: [
-          {
-            title: 'What the script does',
-            text: 'Installs Pi-hole v6 in Docker on the host network, so the query log shows every device\'s real IP. It\'s blocking from the first minute: no setup wizard, no lists to add by hand.',
-            items: [
-              'Checks port 53 first. If systemd-resolved holds it, it turns off only the DNS stub and keeps the host resolving. Other DNS servers (dnsmasq, bind9, another container) are shown to you before anything is stopped.',
-              'Checks the admin and Unbound ports too, and offers the next free one (e.g. 8080 when CasaOS has 80).',
-              'Loads curated HaGeZi blocklists and allowlists, then runs the first update.',
-              'Optionally runs Unbound, your own recursive resolver, so no DNS company sees your lookups.',
-              'Turns on DNSSEC and a daily blocklist update.',
-            ],
-          },
-          {
-            title: 'Choices while installing',
-            text: 'Every question has a default (press Enter) and a flag for unattended installs. Nothing is tied to one network: router, subnet, domain and VPNs are detected on your machine.',
-            items: [
-              '`--password` Admin password: generated, or type your own',
-              '`--blocklists` Light · Balanced (default) · Aggressive · Classic',
-              '`--extras` Smart TV · phone & PC telemetry · DNS bypass · gambling · adult',
-              '`--allowlists` Shopping & affiliate links (default) · link shorteners',
-              '`--upstream` Unbound (default) · Cloudflare · Quad9 · Google · your own IPs',
-              '`--dns-access` Local network only (default), or any network (Tailscale, WireGuard)',
-              '`--device-names` Ask your router for device names in the query log',
-              '`--refresh` Update blocklists daily (default) or weekly',
-            ],
-          },
-          {
-            title: 'How the pieces connect',
-            text: 'Your devices ask Pi-hole on port 53. Blocked domains get 0.0.0.0. Everything else goes to Unbound on 127.0.0.1:5335, which asks the root servers directly and checks DNSSEC. Reverse lookups go to your router, so the log shows names instead of IPs. Unbound only listens on localhost, so only Pi-hole can reach it.',
-          },
-          {
-            title: 'After installing',
-            text: 'The script runs checks (ads blocked, sites resolve, login works, Unbound and DNSSEC answer, device names resolve) and prints your admin URL and password.',
-            items: [
-              'Set the server\'s IP as the DNS server in your router\'s DHCP settings, so every device uses it.',
-              'Admin page: http://<server-ip>/admin (or the port it picked).',
-              'Password: saved in `/opt/sudohomelab/pihole/credentials.txt` (root only).',
-              'Using Tailscale with "any network"? It prints the steps to make Pi-hole your tailnet\'s DNS.',
-            ],
-          },
-          {
-            title: 'Updating & uninstalling',
-            text: 'Run the same command again to change anything: it reads your saved choices, changes only what you changed, and removes only the lists it added. Uninstall gives port 53 back to systemd-resolved exactly as it was.',
-          },
-          {
-            title: 'Troubleshooting',
-            items: [
-              'Logs: `/var/log/sudohomelab/pihole-*.log`',
-              'Preview without changing anything: add `--dry-run`',
-              'A site broke? Open the query log in the admin page, find the blocked domain and allow it.',
-              'All options: `sudo bash pihole.sh --help`',
-            ],
-          },
-        ],
+        uninstall: DNS_UNINSTALL,
+        docs: DNS_DOCS,
       },
       { id: 'adguard', name: 'AdGuard Home', icon: 'adguard-home', desc: 'Modern ad blocker with DoH/DoT and per-client rules.', ports: [53, 3000], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['dns', 'adblock'] },
-      { id: 'unbound', name: 'Unbound', icon: 'unbound', desc: 'Recursive DNS resolver, so no upstream provider sees your lookups.', ports: [5335], platforms: SERVER, min: { ram: 0.25, cpu: 1 }, tags: ['dns', 'privacy'] },
-      { id: 'npm', name: 'Nginx Proxy Manager', icon: 'nginx-proxy-manager', desc: 'Reverse proxy with a GUI and free Let\'s Encrypt certificates.', ports: [80, 443, 81], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['proxy', 'ssl'] },
+      { id: 'unbound', name: 'Unbound', icon: 'unbound', desc: 'Recursive DNS resolver, so no upstream provider sees your lookups.', ports: [5335], platforms: SERVER, min: { ram: 0.25, cpu: 1 }, tags: ['dns', 'privacy'],
+        status: 'beta', available: ['linux'], script: 'pihole', uninstall: DNS_UNINSTALL, docs: DNS_DOCS, note: 'Installed by the Private DNS Stack script, together with Pi-hole and Nginx Proxy Manager.' },
+      { id: 'npm', name: 'Nginx Proxy Manager', icon: 'nginx-proxy-manager', desc: 'Reverse proxy with a GUI and free Let\'s Encrypt certificates.', ports: [80, 443, 81], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['proxy', 'ssl'],
+        status: 'beta', available: ['linux'], script: 'pihole', uninstall: DNS_UNINSTALL, docs: DNS_DOCS, note: 'Installed by the Private DNS Stack script, together with Pi-hole and Unbound.' },
       { id: 'caddy', name: 'Caddy', icon: 'caddy', desc: 'Zero-config reverse proxy with automatic HTTPS.', ports: [80, 443], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['proxy', 'ssl'] },
     ],
     stack: {
       id: 'dns-stack',
       name: 'Private DNS Stack',
-      pitch: 'Ad blocker forwarding to your own recursive resolver, plus a reverse proxy so every app gets a name like jellyfin.home.',
+      available: ['linux'],
+      script: 'pihole',        // AdBlock_DNS_Proxy/linux/pihole.sh installs the whole stack
+      flags: false,            // its choices are asked while installing
+      uninstall: DNS_UNINSTALL,
+      pitch: 'Pi-hole blocking ads for every device, Unbound looking up sites privately, and Nginx Proxy Manager giving each app a name like https://jellyfin.home. Add names from the same script.',
       options: [
-        { key: 'blocker', label: 'Ad blocker', type: 'one', choices: ['pihole', 'adguard'], default: 'pihole' },
-        { key: 'proxy', label: 'Reverse proxy', type: 'one', choices: ['npm', 'caddy'], default: 'npm' },
+        { key: 'blocker', label: 'Ad blocker', type: 'one', choices: ['pihole'], default: 'pihole' },
+        { key: 'proxy', label: 'Reverse proxy', type: 'one', choices: ['npm'], default: 'npm' },
       ],
       core: ['unbound'],
+      guide: {
+        intro: 'Three pieces, one job each. The script connects them, then gives you a menu to add, list and delete app names whenever you want.',
+        steps: [
+          { title: 'Ask', apps: ['pihole'], text: 'Every device asks Pi-hole for addresses (set it as the DNS server in your router). Ads and trackers get 0.0.0.0, so they never load.' },
+          { title: 'Look up', apps: ['unbound'], text: 'Everything else goes to Unbound, which asks the internet\'s root servers directly and checks DNSSEC. No DNS company sees what you browse.' },
+          { title: 'Name', apps: ['pihole'], text: 'For your app names (jellyfin.home), Pi-hole answers with this server\'s address: the LAN address at home, the Tailscale address over Tailscale.' },
+          { title: 'Route', apps: ['npm'], text: 'Nginx Proxy Manager sees which name was asked for and passes the request to that app\'s IP and port, over HTTPS.' },
+          { title: 'Add apps', apps: ['npm', 'pihole'], text: 'Run the script → Add domain → type the address (192.168.1.50:8096) and a name. It creates the route, the certificate and the DNS record, then checks it opens.' },
+          { title: 'Anywhere', apps: ['pihole', 'npm'], text: 'With Tailscale, point your tailnet\'s DNS at the server (split DNS for just the names, or everything for ad blocking too). Same names away from home.' },
+        ],
+        folders: [
+          ['https://pihole.home', 'Pi-hole admin (also http://<ip>:8080/admin)'],
+          ['https://proxy.home', 'Nginx Proxy Manager admin (also http://<ip>:81)'],
+          ['https://<app>.home', 'each app you add → its IP:port'],
+          ['http://proxy.home/ca.crt', 'certificate to install once per device'],
+        ],
+        left: 'Left for you: set the server as the DNS server in your router, install the certificate on your devices (or use your own domain with Let\'s Encrypt), and add your apps.',
+      },
       wires: [
         ['$blocker', 'unbound', 'upstream'],
         ['$proxy', '$blocker', 'local DNS'],
