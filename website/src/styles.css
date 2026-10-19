@@ -1546,6 +1546,38 @@ kbd {
   border-color: color-mix(in srgb, var(--red) 50%, transparent);
   background: color-mix(in srgb, var(--red) 8%, transparent);
 }
+.actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  transition: all 0.2s var(--ease);
+}
+.action:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.action.on {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.action.danger.on {
+  border-color: color-mix(in srgb, var(--red) 55%, transparent);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+}
 .uninstall {
   margin-top: 12px;
   padding: 14px;

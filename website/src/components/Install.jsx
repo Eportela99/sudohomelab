@@ -58,12 +58,20 @@ export function InstallBox({ name, folder, script, supported, available, flags =
   const p = platformById[platform]
   const ok = supported.includes(platform)
   const path = scriptPath(folder, p, script)
-  const cmd = p.cmd(path, flags)
   const filename = `${script}-${p.id}.${p.ext}`
   const published = available?.includes(platform)
-  const [showUninstall, setShowUninstall] = useState(false)
-  const [purge, setPurge] = useState(false)
-  const uninstallCmd = p.cmd(path, purge ? [['uninstall', true], ['purge', true]] : [['uninstall', true]])
+  // Published scripts get three commands: install, uninstall, uninstall + delete settings.
+  const [action, setAction] = useState('install')
+  const ACTIONS = [
+    { id: 'install', label: 'Install', flags, note: null },
+    { id: 'uninstall', label: 'Uninstall', flags: [['uninstall', true]],
+      note: 'Removes the apps but keeps their settings, so reinstalling brings back your logins and wiring.' },
+    { id: 'purge', label: 'Uninstall + delete settings', flags: [['uninstall', true], ['purge', true]],
+      note: 'Removes the apps and deletes their settings, logins and API keys.' },
+  ]
+  const current = published ? ACTIONS.find((a) => a.id === action) : ACTIONS[0]
+  const shown = p.cmd(path, current.flags)
+  const danger = current.id !== 'install'
 
   // Published scripts are fetched from GitHub (raw URLs allow CORS); others get a placeholder.
   const download = async () => {
@@ -83,11 +91,25 @@ export function InstallBox({ name, folder, script, supported, available, flags =
       <PlatformSwitcher supported={supported} compact />
       {ok ? (
         <>
-          <div className="cmd" key={platform + cmd}>
+          {published && (
+            <div className="actions" role="tablist" aria-label="What to do">
+              {ACTIONS.map((a) => (
+                <button key={a.id} role="tab" aria-selected={action === a.id} className={`action ${a.id !== 'install' ? 'danger' : ''} ${action === a.id ? 'on' : ''}`} onClick={() => setAction(a.id)}>
+                  {a.id === 'install' ? <Icon.Download /> : <Icon.Trash />} {a.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className={`cmd ${danger ? 'danger' : ''}`} key={platform + shown}>
             <span className="cmd-shell">{p.shell === 'powershell' ? 'PS>' : '$'}</span>
-            <code className="cmd-text">{highlight(cmd)}</code>
-            <CopyButton text={cmd} />
+            <code className="cmd-text">{highlight(shown)}</code>
+            <CopyButton text={shown} />
           </div>
+          {danger && (
+            <p className="uninstall-note">
+              {current.note} <strong>Your media is never deleted.</strong> It asks before removing anything.
+            </p>
+          )}
           {available?.length > 0 && !available.includes(platform) && (
             <div className="install-soon">
               The {p.name} script is coming soon. Ready now on: {available.map((id) => platformById[id].name).join(', ')}.
@@ -104,39 +126,8 @@ export function InstallBox({ name, folder, script, supported, available, flags =
               <a className="btn-ghost sm" href={`${GITHUB_REPO}/blob/main/${path}`} target="_blank" rel="noreferrer">
                 <Icon.GitHub /> Source
               </a>
-              {published && (
-                <button className={`btn-ghost sm ${showUninstall ? 'on' : ''}`} onClick={() => setShowUninstall((v) => !v)} aria-expanded={showUninstall}>
-                  <Icon.Trash /> Uninstall
-                </button>
-              )}
             </span>
           </div>
-          {published && showUninstall && (
-            <div className="uninstall">
-              <div className="uninstall-head">
-                <strong>Uninstall {name}</strong>
-                <div className="seg" role="radiogroup" aria-label="What to remove">
-                  <button role="radio" aria-checked={!purge} className={!purge ? 'on' : ''} onClick={() => setPurge(false)}>
-                    Keep settings
-                  </button>
-                  <button role="radio" aria-checked={purge} className={purge ? 'on' : ''} onClick={() => setPurge(true)}>
-                    Delete settings too
-                  </button>
-                </div>
-              </div>
-              <div className="cmd danger" key={uninstallCmd}>
-                <span className="cmd-shell">{p.shell === 'powershell' ? 'PS>' : '$'}</span>
-                <code className="cmd-text">{highlight(uninstallCmd)}</code>
-                <CopyButton text={uninstallCmd} />
-              </div>
-              <p className="uninstall-note">
-                {purge
-                  ? 'Removes the apps and deletes their settings, logins and API keys. '
-                  : 'Removes the apps but keeps their settings, so reinstalling brings back your logins and wiring. '}
-                <strong>Your media is never deleted.</strong> It asks before removing anything.
-              </p>
-            </div>
-          )}
         </>
       ) : (
         <div className="install-na">
