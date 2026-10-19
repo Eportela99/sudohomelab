@@ -24,9 +24,10 @@ export const PLATFORMS = [
     short: 'Proxmox',
     icon: 'proxmox',
     shell: 'bash',
-    note: 'Run in the Proxmox host shell. Creates a dedicated LXC container.',
+    note: 'Run in the Proxmox host shell (root). Creates one Docker-ready LXC container.',
     ext: 'sh',
-    cmd: (path, f = []) => `bash <(curl -fsSL ${SCRIPT_BASE}/${path})${unix(f)}`,
+    // Proxmox's shell is already root: no sudo.
+    cmd: (path, f = []) => `bash -c "$(curl -fsSL ${SCRIPT_BASE}/${path})"${f.length ? ' _' + unix(f) : ''}`,
   },
   {
     id: 'linux',
@@ -54,7 +55,7 @@ export const PLATFORMS = [
     short: 'Windows',
     icon: 'microsoft-windows',
     shell: 'powershell',
-    note: 'Run in an elevated PowerShell. Uses Docker Desktop / WSL2 or native installers.',
+    note: 'Run in PowerShell (it asks for admin rights). Installs native apps as Windows services.',
     ext: 'ps1',
     cmd: (path, f = []) =>
       f.length

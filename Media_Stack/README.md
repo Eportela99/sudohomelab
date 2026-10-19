@@ -6,9 +6,11 @@ Stream, request and automate your whole library: Jellyfin and/or Plex, Seerr, Ra
 | --- | --- | --- |
 | Ubuntu / Debian | [`linux/media-stack.sh`](linux/media-stack.sh) | 🧪 Beta |
 | TrueNAS SCALE 24.10+ | [`truenas/media-stack.sh`](truenas/media-stack.sh) | 🧪 Beta (tested on 25.10) |
-| Proxmox, Windows, macOS | not written yet | Planned |
+| Proxmox VE 8 / 9 | [`proxmox/media-stack.sh`](proxmox/media-stack.sh) | 🧪 Written, not tested yet |
+| Windows 11 / Server 2019+ | [`windows/media-stack.ps1`](windows/media-stack.ps1) | 🧪 Written, not tested yet |
+| macOS | not written yet | Planned |
 
-`truenas/media-stack.sh` loads `linux/media-stack.sh` as a library, so both share the same wiring code. `truenas/test/` has a `midclt` test double and a validator for catalog-app values.
+`truenas/media-stack.sh` and `proxmox/media-stack.sh` load `linux/media-stack.sh` as a library (Proxmox also runs it inside the container it creates), so both share the same wiring code. `truenas/test/` has a `midclt` test double and a validator for catalog-app values.
 
 ## Ubuntu / Debian
 
@@ -88,3 +90,27 @@ Uninstall (the media dataset is never touched; `--purge` also deletes `<pool>/ap
 curl -fsSL <truenas url> -o /tmp/media-stack.sh && sudo bash /tmp/media-stack.sh --uninstall --purge
 ```
 
+
+## Proxmox VE 8 / 9 (not tested yet)
+
+Run in the Proxmox host shell (root):
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/proxmox/media-stack.sh)"
+```
+
+It creates one unprivileged Debian LXC (`nesting=1,keyctl=1`, starts on boot, tag `sudohomelab-mediastack`) and runs the Ubuntu/Debian installer inside it, with the same apps and wiring. Settings and media live on the host and are bind-mounted in (`/opt/sudohomelab/media-stack` and `/srv/media`), so `--uninstall` deletes the container but keeps your settings, and `--purge` deletes them too. A GPU (`/dev/dri`) is passed through when present (Proxmox 8.2+).
+
+Extra options: `--ctid`, `--storage`, `--bridge`, `--ip=dhcp|CIDR`, `--gateway`, `--cores`, `--memory`, `--disk`, `--settings-dir`, `--data-dir`.
+
+## Windows 11 / Windows Server 2019+ (not tested yet)
+
+Run in PowerShell (it asks for admin rights itself):
+
+```powershell
+irm https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/windows/media-stack.ps1 | iex
+```
+
+Native Windows apps, each running as a Windows service (WinSW), with the same wiring. Plex runs from a startup task, because it isn't a service on Windows. Seerr has no Windows build, so it's compiled from source with Node.js as the **last** step (about 5 minutes). You choose whether the services run as a dedicated local user `sudohomelab` (recommended, and works with NAS shares) or as LocalSystem. Firewall rules open the ports for Private and Domain networks only. Settings go in `C:\ProgramData\sudohomelab\media-stack`, programs in `C:\Program Files\sudohomelab`.
+
+Options: `-Server`, `-Downloader`, `-Extras lidarr,bazarr,tdarr,seerr|none`, `-SubtitleLangs`, `-DataDir`, `-Username`, `-Password`, `-ServiceAccount sudohomelab|localsystem`, `-Yes`, `-DryRun`, `-Uninstall [-Purge]`.

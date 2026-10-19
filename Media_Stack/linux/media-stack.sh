@@ -19,7 +19,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.3.3"
+VERSION="0.3.4"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/linux/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
@@ -35,6 +35,7 @@ ASSUME_YES=0
 DATA_DIR_SET=0
 DRY_RUN=0
 GROW_DISK=0        # --grow-disk: allow growing an LVM root without asking
+SKIP_DATA_PERMS=0  # --skip-data-perms: the host manages media folder ownership (Proxmox bind mount)
 UNINSTALL=0
 PURGE=0
 
@@ -312,6 +313,7 @@ parse_args() {
       -y|--yes) ASSUME_YES=1 ;;
       --dry-run) DRY_RUN=1 ;;
       --grow-disk) GROW_DISK=1 ;;
+      --skip-data-perms) SKIP_DATA_PERMS=1 ;;
       --uninstall) UNINSTALL=1 ;;
       --purge) PURGE=1 ;;
       -h|--help) usage; exit 0 ;;
@@ -365,6 +367,9 @@ svc_start() { dc start "$1"; }
 svc_restart() { dc restart "$1"; }
 pull_images() { run "Downloading images" dc --progress plain pull; }
 deploy_stack() { run "Starting $1 containers" dc --progress plain up -d --remove-orphans; }
+pre_plan() { :; }     # last questions before the Plan; the Proxmox script asks about the container
+plan_extra() { :; }   # extra "Plan" lines; the Proxmox script lists the container here
+
 manage_hint() { printf '\n    %sManage:%s cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"; }
 # Compose project names that count as "this stack" when checking port owners.
 our_project() { [[ $1 == mediastack ]]; }
@@ -635,6 +640,7 @@ choose_options() {
     PLEX_CLAIM=$(ask "Plex claim token" "")
   fi
 
+  pre_plan
   printf '\n  %sPlan%s\n' "$C_BOLD" "$C_RESET"
   local servers dls
   servers=$(want jellyfin && echo -n "Jellyfin "; want plex && echo -n "Plex"; true)
@@ -643,6 +649,7 @@ choose_options() {
   extras_txt=$(want lidarr && echo -n "Lidarr "; want bazarr && echo -n "Bazarr (subtitles: $SUB_LANGS) "; want tdarr && echo -n "Tdarr"; true)
   printf '    %-16s %s\n' "Media server" "$servers" "Downloads" "$dls" "Automation" "Seerr · Radarr · Sonarr · Prowlarr" \
     "Extras" "${extras_txt:-none}" "Media folder" "$DATA_DIR" "App configs" "$INSTALL_DIR" "Login" "$APP_USER"
+  plan_extra
   log "Plan: server=$SERVER downloader=$DOWNLOADER extras=${EXTRAS:-none} data=$DATA_DIR install=$INSTALL_DIR user=$APP_USER"
   printf '\n'
 
@@ -1084,9 +1091,17 @@ EOF
     fi
   fi
 
-  chown -R "$PUID:$PGID" "$INSTALL_DIR/config" "$DATA_DIR"
+  chown -R "$PUID:$PGID" "$INSTALL_DIR/config"
   chown -R "$SEERR_UID:$SEERR_UID" "$INSTALL_DIR/config/seerr"
-  chmod -R u+rwX,g+rwX "$DATA_DIR"
+  # On Proxmox the media folder is a bind mount the host already prepared, and it
+  # may hold files this container can't (and shouldn't) re-own.
+  if (( ! SKIP_DATA_PERMS )); then
+    chown -R "$PUID:$PGID" "$DATA_DIR"
+    chmod -R u+rwX,g+rwX "$DATA_DIR"
+  else
+    # Only the folders we just created (still owned by root) go to the apps' user.
+    find "$DATA_DIR" -maxdepth 4 -type d -uid 0 -exec chown "$PUID:$PGID" {} + -exec chmod 775 {} +
+  fi
 }
 
 write_compose() {

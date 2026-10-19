@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Variables set in this file are read by the shared core (sourced at runtime),
+# which shellcheck can't follow:
+# shellcheck disable=SC2034,SC2120
 # ──────────────────────────────────────────────────────────────────────────────
 #  sudo homelab · Media Stack installer (TrueNAS SCALE 24.10+)
 #  https://github.com/Eportela99/sudohomelab
@@ -18,9 +21,6 @@
 #  sudo 1.9.13 kills a command whose text is the whole script: envp mismatch, exit 137.)
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
-# Variables set here are read by the shared core (sourced at runtime), which
-# shellcheck can't follow:
-# shellcheck disable=SC2034
 
 TN_REPO_RAW="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack"
 LIB_URL="$TN_REPO_RAW/linux/media-stack.sh"
