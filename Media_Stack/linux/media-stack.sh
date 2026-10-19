@@ -19,7 +19,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.3.1"
+VERSION="0.3.3"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/linux/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
@@ -210,6 +210,9 @@ tty_foreground() {
 
 has_tty() { [[ -r /dev/tty ]] && { : </dev/tty; } 2>/dev/null && tty_foreground; }
 
+# The command to show users for (re)running this script. TrueNAS overrides it.
+run_hint() { echo "sudo bash -c \"\$(curl -fsSL $SCRIPT_URL)\"${1:+ _$1}"; }
+
 # Stop early, with the right command, instead of freezing at the first question.
 check_interactive() {
   (( ASSUME_YES )) && return 0
@@ -219,7 +222,7 @@ check_interactive() {
   for a in "${ORIG_ARGS[@]}"; do args+=" $(printf '%q' "$a")"; done
   printf '\n  %s✗%s This script asks you questions, but %scurl | sudo bash%s runs it in the background,\n' "$C_RED" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
   printf '    so it can'"'"'t read your answers. Run it like this instead:\n\n' >&2
-  printf '      %ssudo bash -c "$(curl -fsSL %s)"%s%s\n\n' "$C_CYAN" "$SCRIPT_URL" "${args:+ _$args}" "$C_RESET" >&2
+  printf '      %s%s%s\n\n' "$C_CYAN" "$(run_hint "$args")" "$C_RESET" >&2
   printf '    Or skip the questions:  curl -fsSL <url> | sudo bash -s --%s --yes\n\n' "$args" >&2
   log "aborted: interactive run with stdin piped under sudo (background process group)"
   exit 1
@@ -367,13 +370,37 @@ manage_hint() { printf '\n    %sManage:%s cd %s && sudo docker compose ps | logs
 our_project() { [[ $1 == mediastack ]]; }
 
 # HTTP helpers. Bodies of failed requests land in the log via --fail-with-body.
-http_code() { curl -s -o /dev/null -m 5 -w '%{http_code}' "$@" 2>/dev/null || true; }
+# Secrets and request bodies never go on a command line: they'd show in `ps`, and
+# TrueNAS's sudo (log_subcmds) logs every command and kills ones with long text.
+# curl reads them from a config on stdin (-K -); jq reads them from $ENV.
+cq() { local v=$1; v=${v//\\/\\\\}; v=${v//\"/\\\"}; v=${v//$'\r'/}; v=${v//$'\n'/\\n}; printf '"%s"' "$v"; }
+ckv() { printf '%s = %s\n' "$1" "$(cq "$2")"; }   # one curl config line: ckv header "X-Api-Key: …"
 
-wait_for() { # wait_for "name" url [timeout] [extra curl args...]
-  local name=$1 url=$2 timeout=${3:-180}; shift 3 || shift $#
+# jq/python get secrets as files: only the path is on the command line. TrueNAS's
+# sudo also logs every command's ENVIRONMENT, so env vars aren't private either.
+# SHL_TMP is a root-only folder created at start and removed on exit.
+SHL_TMP=""
+sfile() { # sfile name value → path of a 600 file in SHL_TMP holding value
+  local f="$SHL_TMP/$1"
+  ( umask 077; printf '%s' "$2" >"$f" )
+  printf '%s' "$f"
+}
+cleanup() {
+  [[ -n $SHL_TMP && -d $SHL_TMP ]] && rm -rf "$SHL_TMP"
+  (( IS_TTY )) && printf '\e[?25h'   # never leave the cursor hidden
+  return 0
+}
+
+http_code() { # http_code url [api key]
+  { [[ -n ${2:-} ]] && ckv header "X-Api-Key: $2"; true; } |
+    curl -s -o /dev/null -m 5 -w '%{http_code}' -K - "$1" 2>/dev/null || true
+}
+
+wait_for() { # wait_for "name" url [timeout] [api key]
+  local name=$1 url=$2 timeout=${3:-180} key=${4:-}
   local start=$SECONDS code
   while (( SECONDS - start < timeout )); do
-    code=$(http_code "$@" "$url")
+    code=$(http_code "$url" "$key")
     [[ $code =~ ^(200|30[1-8]|401|403)$ ]] && { log "$name ready ($code) after $((SECONDS - start))s"; return 0; }
     echo "$name is starting up… (HTTP ${code:-000}, $((SECONDS - start))s / ${timeout}s)"
     sleep 2
@@ -384,9 +411,8 @@ wait_for() { # wait_for "name" url [timeout] [extra curl args...]
 
 api() { # api METHOD URL KEY [JSON]
   local method=$1 url=$2 key=$3 data=${4:-}
-  local args=(-sS "$CURL_FAIL" -m 30 -X "$method" -H "X-Api-Key: $key" -H 'Content-Type: application/json')
-  [[ -n $data ]] && args+=(--data "$data")
-  curl "${args[@]}" "$url"
+  { ckv header "X-Api-Key: $key"; ckv header "Content-Type: application/json"; [[ -n $data ]] && ckv data "$data"; true; } |
+    curl -sS "$CURL_FAIL" -m 30 -X "$method" -K - "$url"
 }
 
 xml_key() { sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$1" 2>/dev/null | head -n1; }
@@ -394,7 +420,7 @@ xml_key() { sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$1" 2>/dev/null | head 
 # ── Steps ─────────────────────────────────────────────────────────────────────
 preflight() {
   step "Pre-flight checks"
-  [[ $EUID -eq 0 ]] || die "Please run as root:  sudo bash -c \"\$(curl -fsSL $SCRIPT_URL)\""
+  [[ $EUID -eq 0 ]] || die "Please run as root:  $(run_hint)"
 
   [[ -r /etc/os-release ]] || die "Cannot detect the OS (/etc/os-release missing)."
   # shellcheck disable=SC1091
@@ -980,10 +1006,10 @@ EOF
 }
 
 qbit_password_hash() { # PBKDF2-SHA512, the format qBittorrent stores in its config
-  APP_PASS="$APP_PASS" python3 - <<'PY'
+  SHL_PASS_FILE=$(sfile pass "$APP_PASS") python3 - <<'PY'
 import base64, hashlib, os
 salt = os.urandom(16)
-key = hashlib.pbkdf2_hmac('sha512', os.environ['APP_PASS'].encode(), salt, 100000)
+key = hashlib.pbkdf2_hmac('sha512', open(os.environ['SHL_PASS_FILE']).read().encode(), salt, 100000)
 print('@ByteArray(%s:%s)' % (base64.b64encode(salt).decode(), base64.b64encode(key).decode()))
 PY
 }
@@ -1287,9 +1313,9 @@ start_stack() {
   PROWLARR_KEY=$(xml_key "$INSTALL_DIR/config/prowlarr/config.xml")
   [[ -n $RADARR_KEY && -n $SONARR_KEY && -n $PROWLARR_KEY ]] || die "Could not read API keys from config.xml files."
 
-  run "Waiting for Radarr" wait_for Radarr "$RADARR_URL/api/v3/system/status" 240 -H "X-Api-Key: $RADARR_KEY"
-  run "Waiting for Sonarr" wait_for Sonarr "$SONARR_URL/api/v3/system/status" 240 -H "X-Api-Key: $SONARR_KEY"
-  run "Waiting for Prowlarr" wait_for Prowlarr "$PROWLARR_URL/api/v1/system/status" 240 -H "X-Api-Key: $PROWLARR_KEY"
+  run "Waiting for Radarr" wait_for Radarr "$RADARR_URL/api/v3/system/status" 240 "$RADARR_KEY"
+  run "Waiting for Sonarr" wait_for Sonarr "$SONARR_URL/api/v3/system/status" 240 "$SONARR_KEY"
+  run "Waiting for Prowlarr" wait_for Prowlarr "$PROWLARR_URL/api/v1/system/status" 240 "$PROWLARR_KEY"
   want qbittorrent && run "Waiting for qBittorrent" wait_for qBittorrent "http://localhost:$P_QBIT/" 180
   want sabnzbd && run "Waiting for SABnzbd" wait_for SABnzbd "http://localhost:$P_SAB/" 180
   want jellyfin && run "Waiting for Jellyfin" wait_for Jellyfin "http://localhost:$P_JELLYFIN/health" 240
@@ -1297,7 +1323,7 @@ start_stack() {
   if want lidarr; then
     LIDARR_URL="http://localhost:$P_LIDARR"
     LIDARR_KEY=$(xml_key "$INSTALL_DIR/config/lidarr/config.xml")
-    run "Waiting for Lidarr" wait_for Lidarr "$LIDARR_URL/api/v1/system/status" 240 -H "X-Api-Key: $LIDARR_KEY"
+    run "Waiting for Lidarr" wait_for Lidarr "$LIDARR_URL/api/v1/system/status" 240 "$LIDARR_KEY"
   fi
   want bazarr && run "Waiting for Bazarr" wait_for Bazarr "http://localhost:$P_BAZARR/" 240
   want tdarr && run "Waiting for Tdarr" wait_for Tdarr "http://localhost:$P_TDARR/api/v2/status" 300
@@ -1308,7 +1334,7 @@ start_stack() {
 set_auth() { # set_auth url apiver key: forms login (API keys keep working for app-to-app calls)
   local url=$1 v=$2 key=$3 cfg
   cfg=$(api GET "$url/api/$v/config/host" "$key")
-  cfg=$(jq --arg u "$APP_USER" --arg p "$APP_PASS" \
+  cfg=$(jq --rawfile u "$(sfile user "$APP_USER")" --rawfile p "$(sfile pass "$APP_PASS")" \
     '.authenticationMethod="forms" | .authenticationRequired="enabled"
      | .username=$u | .password=$p | .passwordConfirmation=$p' <<<"$cfg")
   api PUT "$url/api/$v/config/host/$(jq -r .id <<<"$cfg")" "$key" "$cfg" >/dev/null
@@ -1331,7 +1357,7 @@ add_from_schema() {
   existing=$(api GET "$url/api/$v/$res" "$key" | jq --arg n "$name" 'first(.[] | select(.name == $n)) // empty')
   if [[ -n $existing ]]; then
     local updated
-    updated=$(jq --argjson f "$fields" '.fields |= map(.name as $k | if ($f | has($k)) then .value = $f[$k] else . end)' <<<"$existing")
+    updated=$(jq --slurpfile fs "$(sfile fields "$fields")" '$fs[0] as $f | .fields |= map(.name as $k | if ($f | has($k)) then .value = $f[$k] else . end)' <<<"$existing")
     if [[ $(jq -S .fields <<<"$updated") != $(jq -S .fields <<<"$existing") ]] || jq -e '.fields[] | select(.name == "password" and .value == "********")' <<<"$existing" >/dev/null; then
       api PUT "$url/api/$v/$res/$(jq -r .id <<<"$existing")" "$key" "$updated" >/dev/null
       log "$res '$name' updated"
@@ -1341,7 +1367,8 @@ add_from_schema() {
     return 0
   fi
   local body
-  body=$(api GET "$url/api/$v/$res/schema" "$key" | jq --arg impl "$impl" --arg n "$name" --argjson f "$fields" "
+  body=$(api GET "$url/api/$v/$res/schema" "$key" | jq --slurpfile fs "$(sfile fields "$fields")" --arg impl "$impl" --arg n "$name" "
+    \$fs[0] as \$f |
     first(.[] | select(.implementation == \$impl))
     | .name = \$n | .enable = true
     | .fields |= map(.name as \$k | if (\$f | has(\$k)) then .value = \$f[\$k] else . end)
@@ -1354,8 +1381,8 @@ qbit_setup() {
   local jar q="http://localhost:$P_QBIT"
   jar=$(mktemp)
   # qBittorrent 4.x answers "Ok.", 5.x an empty 204; both set the session cookie.
-  curl -sS -o /dev/null -c "$jar" -H "Referer: $q" --data-urlencode "username=$APP_USER" \
-    --data-urlencode "password=$APP_PASS" "$q/api/v2/auth/login"
+  { ckv data-urlencode "username=$APP_USER"; ckv data-urlencode "password=$APP_PASS"; } |
+    curl -sS -o /dev/null -c "$jar" -H "Referer: $q" -K - "$q/api/v2/auth/login"
   grep -q QBT_SID "$jar" || { rm -f "$jar"; echo "qBittorrent login failed (wrong password?)"; return 1; }
   local cat cats="movies tv"
   want lidarr && cats+=" music"
@@ -1379,8 +1406,8 @@ sab_setup() {
             "complete_dir=/data/Active_Downloads/usenet/complete" \
             "username=$APP_USER" "password=$APP_PASS"; do
     k=${kv%%=*}; v=${kv#*=}
-    curl -sS "$CURL_FAIL" -G "$s" --data "mode=set_config" --data "section=misc" --data "keyword=$k" \
-      --data-urlencode "value=$v" --data "apikey=$SAB_KEY" --data "output=json" >/dev/null
+    { ckv data "mode=set_config"; ckv data "section=misc"; ckv data "keyword=$k"; ckv data-urlencode "value=$v"
+      ckv data "apikey=$SAB_KEY"; ckv data "output=json"; } | curl -sS "$CURL_FAIL" -G -K - "$s" >/dev/null
   done
   svc_restart sabnzbd
   wait_for SABnzbd "http://localhost:$P_SAB/" 120
@@ -1392,11 +1419,12 @@ sab_setup() {
   want lidarr && cats+=" music"
   for try in 1 2 3 4 5 6; do
     for k in $cats; do
-      curl -sS "$CURL_FAIL" -G "$s" --data "mode=set_config" --data "section=categories" --data "keyword=$k" \
-        --data "dir=$k" --data "apikey=$SAB_KEY" --data "output=json" >/dev/null
+      { ckv data "mode=set_config"; ckv data "section=categories"; ckv data "keyword=$k"; ckv data "dir=$k"
+        ckv data "apikey=$SAB_KEY"; ckv data "output=json"; } | curl -sS "$CURL_FAIL" -G -K - "$s" >/dev/null
     done
     sleep 3
-    missing=$(curl -sS -G "$s" --data "mode=get_config" --data "section=categories" --data "apikey=$SAB_KEY" --data "output=json" |
+    missing=$({ ckv data "mode=get_config"; ckv data "section=categories"; ckv data "apikey=$SAB_KEY"; ckv data "output=json"; } |
+      curl -sS -G -K - "$s" |
       jq -r --arg want "$cats" '($want | split(" ")) as $w | ($w - [.config.categories[] | select(.dir == .name) | .name]) | length')
     [[ $missing == 0 ]] && { echo "SABnzbd categories set (attempt $try)"; return 0; }
     echo "SABnzbd categories not applied yet (attempt $try), retrying"
@@ -1408,11 +1436,11 @@ wire_radarr() {
   add_root_folder "$RADARR_URL" "$RADARR_KEY" /data/Movies
   if want qbittorrent; then
     add_from_schema "$RADARR_URL" v3 "$RADARR_KEY" downloadclient QBittorrent qBittorrent \
-      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg host "$H_QBIT" --arg port "$P_QBIT" '{host:$host, port:($port|tonumber), username:$u, password:$p, movieCategory:"movies"}')"
+      "$(jq -n --rawfile u "$(sfile user "$APP_USER")" --rawfile p "$(sfile pass "$APP_PASS")" --arg host "$H_QBIT" --arg port "$P_QBIT" '{host:$host, port:($port|tonumber), username:$u, password:$p, movieCategory:"movies"}')"
   fi
   if want sabnzbd; then
     add_from_schema "$RADARR_URL" v3 "$RADARR_KEY" downloadclient Sabnzbd SABnzbd \
-      "$(jq -n --arg k "$SAB_KEY" --arg host "$H_SAB" --arg port "$I_SAB" '{host:$host, port:($port|tonumber), apiKey:$k, movieCategory:"movies"}')"
+      "$(jq -n --rawfile k "$(sfile key "$SAB_KEY")" --arg host "$H_SAB" --arg port "$I_SAB" '{host:$host, port:($port|tonumber), apiKey:$k, movieCategory:"movies"}')"
   fi
 }
 
@@ -1420,19 +1448,19 @@ wire_sonarr() {
   add_root_folder "$SONARR_URL" "$SONARR_KEY" /data/TV_Shows
   if want qbittorrent; then
     add_from_schema "$SONARR_URL" v3 "$SONARR_KEY" downloadclient QBittorrent qBittorrent \
-      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg host "$H_QBIT" --arg port "$P_QBIT" '{host:$host, port:($port|tonumber), username:$u, password:$p, tvCategory:"tv"}')"
+      "$(jq -n --rawfile u "$(sfile user "$APP_USER")" --rawfile p "$(sfile pass "$APP_PASS")" --arg host "$H_QBIT" --arg port "$P_QBIT" '{host:$host, port:($port|tonumber), username:$u, password:$p, tvCategory:"tv"}')"
   fi
   if want sabnzbd; then
     add_from_schema "$SONARR_URL" v3 "$SONARR_KEY" downloadclient Sabnzbd SABnzbd \
-      "$(jq -n --arg k "$SAB_KEY" --arg host "$H_SAB" --arg port "$I_SAB" '{host:$host, port:($port|tonumber), apiKey:$k, tvCategory:"tv"}')"
+      "$(jq -n --rawfile k "$(sfile key "$SAB_KEY")" --arg host "$H_SAB" --arg port "$I_SAB" '{host:$host, port:($port|tonumber), apiKey:$k, tvCategory:"tv"}')"
   fi
 }
 
 wire_prowlarr() {
   add_from_schema "$PROWLARR_URL" v1 "$PROWLARR_KEY" applications Radarr Radarr \
-    "$(jq -n --arg k "$RADARR_KEY" --arg p "http://$H_PROWLARR:$I_PROWLARR" --arg b "http://$H_RADARR:$I_RADARR" '{prowlarrUrl:$p, baseUrl:$b, apiKey:$k}')" '.syncLevel = "fullSync"'
+    "$(jq -n --rawfile k "$(sfile key "$RADARR_KEY")" --arg p "http://$H_PROWLARR:$I_PROWLARR" --arg b "http://$H_RADARR:$I_RADARR" '{prowlarrUrl:$p, baseUrl:$b, apiKey:$k}')" '.syncLevel = "fullSync"'
   add_from_schema "$PROWLARR_URL" v1 "$PROWLARR_KEY" applications Sonarr Sonarr \
-    "$(jq -n --arg k "$SONARR_KEY" --arg p "http://$H_PROWLARR:$I_PROWLARR" --arg b "http://$H_SONARR:$I_SONARR" '{prowlarrUrl:$p, baseUrl:$b, apiKey:$k}')" '.syncLevel = "fullSync"'
+    "$(jq -n --rawfile k "$(sfile key "$SONARR_KEY")" --arg p "http://$H_PROWLARR:$I_PROWLARR" --arg b "http://$H_SONARR:$I_SONARR" '{prowlarrUrl:$p, baseUrl:$b, apiKey:$k}')" '.syncLevel = "fullSync"'
 }
 
 wire_lidarr() {
@@ -1446,14 +1474,14 @@ wire_lidarr() {
   fi
   if want qbittorrent; then
     add_from_schema "$LIDARR_URL" v1 "$LIDARR_KEY" downloadclient QBittorrent qBittorrent \
-      "$(jq -n --arg u "$APP_USER" --arg p "$APP_PASS" --arg host "$H_QBIT" --arg port "$P_QBIT" '{host:$host, port:($port|tonumber), username:$u, password:$p, musicCategory:"music"}')"
+      "$(jq -n --rawfile u "$(sfile user "$APP_USER")" --rawfile p "$(sfile pass "$APP_PASS")" --arg host "$H_QBIT" --arg port "$P_QBIT" '{host:$host, port:($port|tonumber), username:$u, password:$p, musicCategory:"music"}')"
   fi
   if want sabnzbd; then
     add_from_schema "$LIDARR_URL" v1 "$LIDARR_KEY" downloadclient Sabnzbd SABnzbd \
-      "$(jq -n --arg k "$SAB_KEY" --arg host "$H_SAB" --arg port "$I_SAB" '{host:$host, port:($port|tonumber), apiKey:$k, musicCategory:"music"}')"
+      "$(jq -n --rawfile k "$(sfile key "$SAB_KEY")" --arg host "$H_SAB" --arg port "$I_SAB" '{host:$host, port:($port|tonumber), apiKey:$k, musicCategory:"music"}')"
   fi
   add_from_schema "$PROWLARR_URL" v1 "$PROWLARR_KEY" applications Lidarr Lidarr \
-    "$(jq -n --arg k "$LIDARR_KEY" --arg p "http://$H_PROWLARR:$I_PROWLARR" --arg b "http://$H_LIDARR:$I_LIDARR" '{prowlarrUrl:$p, baseUrl:$b, apiKey:$k}')" '.syncLevel = "fullSync"'
+    "$(jq -n --rawfile k "$(sfile key "$LIDARR_KEY")" --arg p "http://$H_PROWLARR:$I_PROWLARR" --arg b "http://$H_LIDARR:$I_LIDARR" '{prowlarrUrl:$p, baseUrl:$b, apiKey:$k}')" '.syncLevel = "fullSync"'
 }
 
 # Tdarr 3 (closed source) is driven through the same endpoints its web UI uses.
@@ -1466,20 +1494,20 @@ JSON
 }
 
 tdarr_api() { # tdarr_api path json → body ; needs TDARR_TOKEN
-  curl -sS "$CURL_FAIL" -m 30 -X POST -H 'Content-Type: application/json' \
-    -H "Authorization: Bearer $TDARR_TOKEN" --data "$2" "http://localhost:$P_TDARR$1"
+  { ckv header "Authorization: Bearer $TDARR_TOKEN"; ckv header "Content-Type: application/json"; ckv data "$2"; } |
+    curl -sS "$CURL_FAIL" -m 30 -X POST -K - "http://localhost:$P_TDARR$1"
 }
 
 tdarr_setup() {
   local t="http://localhost:$P_TDARR" creds res code
-  creds=$(jq -nc --arg u "$APP_USER" --arg p "$APP_PASS" '{username: $u, password: $p}')
+  creds=$(jq -nc --rawfile u "$(sfile user "$APP_USER")" --rawfile p "$(sfile pass "$APP_PASS")" '{username: $u, password: $p}')
   # First run: Tdarr has no users yet, so register the shared login as its admin.
-  res=$(curl -s -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' --data "$creds" "$t/api/v2/public/auth/register")
+  res=$({ ckv header "Content-Type: application/json"; ckv data "$creds"; } | curl -s -m 30 -w '\n%{http_code}' -X POST -K - "$t/api/v2/public/auth/register")
   code=${res##*$'\n'}
   if [[ $code == 201 ]]; then
     echo "Tdarr admin account created for $APP_USER"
   else
-    res=$(curl -s -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' --data "$creds" "$t/api/v2/public/auth/login")
+    res=$({ ckv header "Content-Type: application/json"; ckv data "$creds"; } | curl -s -m 30 -w '\n%{http_code}' -X POST -K - "$t/api/v2/public/auth/login")
     code=${res##*$'\n'}
     [[ $code == 200 ]] || { echo "Tdarr login failed (HTTP $code): was its admin created with another password?"; return 1; }
   fi
@@ -1517,31 +1545,34 @@ bazarr_setup() {
   [[ -n $BAZARR_KEY ]] || { echo "Bazarr API key not found in config.yaml"; return 1; }
   # Bazarr saves settings from form fields named settings-<section>-<key>,
   # exactly like its own web UI.
-  local form=(
-    --data-urlencode "settings-general-use_radarr=true" --data-urlencode "settings-general-use_sonarr=true"
-    --data-urlencode "settings-radarr-ip=$H_RADARR" --data-urlencode "settings-radarr-port=$I_RADARR"
-    --data-urlencode "settings-radarr-apikey=$RADARR_KEY" --data-urlencode "settings-radarr-base_url=/"
-    --data-urlencode "settings-sonarr-ip=$H_SONARR" --data-urlencode "settings-sonarr-port=$I_SONARR"
-    --data-urlencode "settings-sonarr-apikey=$SONARR_KEY" --data-urlencode "settings-sonarr-base_url=/"
-    --data-urlencode "settings-auth-type=form" --data-urlencode "settings-auth-username=$APP_USER"
-    --data-urlencode "settings-auth-password=$APP_PASS"
-  )
+  local form
+  form=$(
+    ckv data-urlencode "settings-general-use_radarr=true"; ckv data-urlencode "settings-general-use_sonarr=true"
+    ckv data-urlencode "settings-radarr-ip=$H_RADARR"; ckv data-urlencode "settings-radarr-port=$I_RADARR"
+    ckv data-urlencode "settings-radarr-apikey=$RADARR_KEY"; ckv data-urlencode "settings-radarr-base_url=/"
+    ckv data-urlencode "settings-sonarr-ip=$H_SONARR"; ckv data-urlencode "settings-sonarr-port=$I_SONARR"
+    ckv data-urlencode "settings-sonarr-apikey=$SONARR_KEY"; ckv data-urlencode "settings-sonarr-base_url=/"
+    ckv data-urlencode "settings-auth-type=form"; ckv data-urlencode "settings-auth-username=$APP_USER"
+    ckv data-urlencode "settings-auth-password=$APP_PASS"
+  )$'\n'
   # Language profile: only on first setup, so a re-run never overwrites yours.
-  if [[ $(curl -s -H "X-API-KEY: $BAZARR_KEY" "$b/api/system/languages/profiles" | jq 'length' 2>/dev/null) == 0 ]]; then
+  if [[ $(ckv header "X-API-KEY: $BAZARR_KEY" | curl -s -K - "$b/api/system/languages/profiles" | jq 'length' 2>/dev/null) == 0 ]]; then
     local l profile
-    for l in ${SUB_LANGS//,/ }; do form+=(--data-urlencode "languages-enabled=$l"); done
+    for l in ${SUB_LANGS//,/ }; do form+=$(ckv data-urlencode "languages-enabled=$l")$'\n'; done
     profile=$(jq -nc --arg langs "$SUB_LANGS" '[{
       profileId: 1, name: ("Default (" + $langs + ")"), cutoff: null, mustContain: [], mustNotContain: [],
       originalFormat: false,
       items: ($langs | split(",") | to_entries | map({id: (.key + 1), language: .value,
         audio_exclude: "False", audio_only_include: "False", hi: "False", forced: "False"}))
     }]')
-    form+=(--data-urlencode "languages-profiles=$profile"
-      --data-urlencode "settings-general-serie_default_enabled=true" --data-urlencode "settings-general-serie_default_profile=1"
-      --data-urlencode "settings-general-movie_default_enabled=true" --data-urlencode "settings-general-movie_default_profile=1")
+    form+=$(
+      ckv data-urlencode "languages-profiles=$profile"
+      ckv data-urlencode "settings-general-serie_default_enabled=true"; ckv data-urlencode "settings-general-serie_default_profile=1"
+      ckv data-urlencode "settings-general-movie_default_enabled=true"; ckv data-urlencode "settings-general-movie_default_profile=1"
+    )$'\n'
     echo "Creating subtitle profile for: $SUB_LANGS"
   fi
-  curl -sS "$CURL_FAIL" -m 60 -X POST -H "X-API-KEY: $BAZARR_KEY" "${form[@]}" "$b/api/system/settings" >/dev/null
+  { ckv header "X-API-KEY: $BAZARR_KEY"; printf '%s' "$form"; } | curl -sS "$CURL_FAIL" -m 60 -X POST -K - "$b/api/system/settings" >/dev/null
   echo "Bazarr connected to Radarr + Sonarr"
 }
 
@@ -1568,7 +1599,7 @@ seerr_setup() {
   local rp sp
   rp=$(pick_profile "$RADARR_URL" "$RADARR_KEY"); sp=$(pick_profile "$SONARR_URL" "$SONARR_KEY")
   cp "$settings" "$settings.bak"
-  jq --arg rk "$RADARR_KEY" --arg sk "$SONARR_KEY" --arg ip "$HOST_IP" --arg rport "$P_RADARR" --arg sport "$P_SONARR" \
+  jq --rawfile rk "$(sfile rk "$RADARR_KEY")" --rawfile sk "$(sfile sk "$SONARR_KEY")" --arg ip "$HOST_IP" --arg rport "$P_RADARR" --arg sport "$P_SONARR" \
      --arg rh "$H_RADARR" --arg ri "$I_RADARR" --arg sh "$H_SONARR" --arg si "$I_SONARR" --arg jh "$H_JELLYFIN" --arg ji "$I_JELLYFIN" \
      --argjson rpid "${rp%%$'\t'*}" --arg rpn "${rp#*$'\t'}" \
      --argjson spid "${sp%%$'\t'*}" --arg spn "${sp#*$'\t'}" \
@@ -1646,7 +1677,7 @@ verify() {
   if [[ $(http_code "http://localhost:$P_SEERR/api/v1/status") == 200 ]]; then ok "Seerr is up"; else warn "Seerr is not responding yet"; fi
   want lidarr && verify_arr Lidarr "$LIDARR_URL" "$LIDARR_KEY" v1
   if want bazarr; then
-    r=$(curl -s -H "X-API-KEY: $BAZARR_KEY" "http://localhost:$P_BAZARR/api/system/settings" |
+    r=$(ckv header "X-API-KEY: $BAZARR_KEY" | curl -s -K - "http://localhost:$P_BAZARR/api/system/settings" |
       jq -r '[if .general.use_radarr then "Radarr" else empty end, if .general.use_sonarr then "Sonarr" else empty end] | join(" + ")' 2>/dev/null)
     if [[ -n $r ]]; then ok "Bazarr watches: $r"; else warn "Bazarr isn't connected to Radarr/Sonarr"; fi
   fi
@@ -1746,6 +1777,8 @@ uninstall() {
 
 main() {
   ORIG_ARGS=("$@")
+  SHL_TMP=$(mktemp -d /tmp/sudohomelab.XXXXXX); chmod 700 "$SHL_TMP"
+  trap cleanup EXIT
   parse_args "$@"
   mkdir -p "$LOG_DIR" 2>/dev/null || { LOG_DIR=/tmp; LOG_FILE="/tmp/$(basename "$LOG_FILE")"; }
   : >"$LOG_FILE" 2>/dev/null || { LOG_FILE=/tmp/$(basename "$LOG_FILE"); : >"$LOG_FILE"; }
@@ -1760,7 +1793,6 @@ main() {
   check_interactive
   if (( UNINSTALL )); then uninstall; exit 0; fi
 
-  (( IS_TTY )) && trap 'printf "\e[?25h"' EXIT   # never leave the cursor hidden
   START_TIME=$SECONDS
   banner
   preflight

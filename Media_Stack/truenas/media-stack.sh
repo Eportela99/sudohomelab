@@ -11,9 +11,11 @@
 #  All the wiring (logins, API keys, root folders, download clients, Prowlarr,
 #  Seerr, Bazarr, Tdarr) is the Linux script's code, loaded as a library.
 #
-#  Usage (TrueNAS shell, as root or with sudo):
-#    sudo bash -c "$(curl -fsSL <url>/Media_Stack/truenas/media-stack.sh)"
-#    sudo bash -c "$(curl -fsSL <url>)" _ --mode=catalog --pool=tank --yes
+#  Usage (TrueNAS shell): download first, then run the file.
+#    curl -fsSL <url>/Media_Stack/truenas/media-stack.sh -o /tmp/media-stack.sh && sudo bash /tmp/media-stack.sh
+#    … && sudo bash /tmp/media-stack.sh --mode=catalog --pool=tank --yes
+#  (Not `sudo bash -c "$(curl …)"`: TrueNAS enables sudo's log_subcmds, and
+#  sudo 1.9.13 kills a command whose text is the whole script: envp mismatch, exit 137.)
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 # Variables set here are read by the shared core (sourced at runtime), which
@@ -41,7 +43,7 @@ tn_load_core() {
 tn_load_core
 
 # ── TrueNAS defaults (override the core's) ────────────────────────────────────
-VERSION="0.1.0-truenas (core $VERSION)"
+VERSION="0.1.1-truenas (core $VERSION)"
 SCRIPT_URL="$TN_REPO_RAW/truenas/media-stack.sh"
 LOG_FILE="$LOG_DIR/media-stack-truenas-$(date +%Y%m%d-%H%M%S).log"
 PUID=568; PGID=568          # TrueNAS's built-in "apps" user
@@ -51,13 +53,50 @@ POOL=""
 NET=mediastack              # shared Docker network for catalog mode
 CUSTOM_APP=mediastack       # TrueNAS app name in custom mode
 
+run_hint() { echo "curl -fsSL $SCRIPT_URL -o /tmp/media-stack.sh && sudo bash /tmp/media-stack.sh${1:+$1}"; }
+
 copy_fn() { eval "$2 () $(declare -f "$1" | tail -n +2)"; }   # copy_fn existing new_name
 
 # Small JSON helper that doesn't need jq (jq may be missing on TrueNAS).
 pyj() { python3 -c 'import json, sys; d = json.load(sys.stdin); print(eval(sys.argv[1]))' "$1"; }
 
 mid() { midclt call "$@"; }
-mid_job() { midclt call -j "$@"; }   # waits for the job and prints its progress
+# Big payloads (a whole compose file, app values) go to the middleware through
+# its Python client and a temp file: on the command line, TrueNAS's sudo
+# (log_subcmds) would log them and kill the command (exit 137).
+tn_call() { # tn_call method 'JSON array of args' [job] → prints the result
+  local f rc=0
+  f=$(mktemp /tmp/sudohomelab-call.XXXXXX); chmod 600 "$f"; printf '%s' "$2" >"$f"
+  python3 - "$1" "$f" "${3:-}" <<'PY' || rc=$?
+import json, sys
+try:
+    from truenas_api_client import Client
+except ImportError:
+    from middlewared.client import Client
+method, path, job = sys.argv[1], sys.argv[2], sys.argv[3] == "job"
+args = json.load(open(path))
+last = [None]
+def progress(j):
+    p = (j or {}).get("progress") or {}
+    line = f'[{p.get("percent") or 0:>3}%] {p.get("description") or ""}'.rstrip()
+    if line != last[0]:
+        print(line, flush=True); last[0] = line
+try:
+    with Client() as c:
+        try:
+            res = c.call(method, *args, job=job, callback=progress) if job else c.call(method, *args)
+        except TypeError:
+            res = c.call(method, *args, job=job)
+except Exception as e:
+    print(f"TrueNAS {method} failed: {e}", file=sys.stderr); sys.exit(1)
+if isinstance(res, dict) and "name" in res:
+    print(f"→ {res.get('name')}: {res.get('state', 'ok')}")
+elif res not in (None, True):
+    print(json.dumps(res)[:300])
+PY
+  rm -f "$f"
+  return "$rc"
+}
 
 banner() {
   printf '%s' "$C_GREEN"
@@ -101,7 +140,7 @@ parse_args() {
 # ── Pre-flight ────────────────────────────────────────────────────────────────
 preflight() {
   step "Pre-flight checks"
-  [[ $EUID -eq 0 ]] || die "Please run as root:  sudo bash -c \"\$(curl -fsSL $SCRIPT_URL)\""
+  [[ $EUID -eq 0 ]] || die "Please run as root:  $(run_hint)"
   command -v midclt >/dev/null 2>&1 || die "This is the TrueNAS version, but midclt isn't here. On Ubuntu/Debian use the Linux script."
 
   local ver major minor
@@ -293,7 +332,8 @@ tn_build_catalog_values() {
   mkdir -p "$INSTALL_DIR/.catalog"
   local a
   for a in $(tn_wanted_apps); do
-    APP=$a CFG="$INSTALL_DIR/config" DATA="$DATA_DIR" NET=$NET TZ_NAME=$TZ_NAME HAS_DRI=$HAS_DRI PLEX_CLAIM=$PLEX_CLAIM \
+    APP=$a CFG="$INSTALL_DIR/config" DATA="$DATA_DIR" NET=$NET TZ_NAME=$TZ_NAME HAS_DRI=$HAS_DRI \
+    PLEX_CLAIM_FILE=$(sfile plexclaim "$PLEX_CLAIM") \
     P_APP=$(tn_port_of "$a") P_TORRENT=$P_TORRENT P_TDARR_SRV=$P_TDARR_SRV UID_=$PUID \
       python3 - >"$INSTALL_DIR/.catalog/$a.json" <<'PY'
 import json, os
@@ -334,7 +374,7 @@ elif app == "jellyfin":
 elif app == "plex":
     # Host network like the Ubuntu stack: local discovery + first-run setup just work.
     v["network"] = {"host_network": True, "web_port": {"bind_mode": "published", "port_number": 32400, "host_ips": []}}
-    v[app] = {"claim_token": e.get("PLEX_CLAIM", ""), "additional_envs": [],
+    v[app] = {"claim_token": open(e["PLEX_CLAIM_FILE"]).read(), "additional_envs": [],
               "devices": [{"host_device": "/dev/dri", "container_device": "/dev/dri"}] if e["HAS_DRI"] == "1" else []}
     v["storage"] = {"config": hp(f"{cfg}/plex"), "data": hp(data), "additional_storage": []}
 elif app == "tdarr":
@@ -377,21 +417,18 @@ pull_images() {
   fi
 }
 
-tn_job() { # tn_job method args... : run a middleware job, fail with its error message
-  local out rc=0
-  out=$(mid_job "$@" 2>&1) || rc=$?
-  printf '%s\n' "$out"
-  (( rc == 0 )) || return "$rc"
+tn_job() { # tn_job method 'JSON args array' : run a middleware job to completion
+  tn_call "$1" "$2" job
 }
 
 deploy_stack() {
   if [[ $MODE == custom ]]; then
     local cfg; cfg=$(cat "$INSTALL_DIR/.compose.json")
     if tn_app_exists "$CUSTOM_APP"; then
-      run "Updating TrueNAS app '$CUSTOM_APP'" tn_job app.update "$CUSTOM_APP" "{\"custom_compose_config\": $cfg}"
+      run "Updating TrueNAS app '$CUSTOM_APP'" tn_job app.update "[\"$CUSTOM_APP\", {\"custom_compose_config\": $cfg}]"
     else
       run "Creating TrueNAS app '$CUSTOM_APP' ($1 containers)" tn_job app.create \
-        "{\"custom_app\": true, \"app_name\": \"$CUSTOM_APP\", \"custom_compose_config\": $cfg}"
+        "[{\"custom_app\": true, \"app_name\": \"$CUSTOM_APP\", \"custom_compose_config\": $cfg}]"
     fi
     return 0
   fi
@@ -403,10 +440,10 @@ deploy_stack() {
   for a in $(tn_wanted_apps); do
     values=$(cat "$INSTALL_DIR/.catalog/$a.json")
     if tn_app_exists "$a"; then
-      run "Updating $a" tn_job app.update "$a" "{\"values\": $values}"
+      run "Updating $a" tn_job app.update "[\"$a\", {\"values\": $values}]"
     else
       run "Installing $a from the catalog ($(tn_train "$a") train)" tn_job app.create \
-        "{\"app_name\": \"$a\", \"catalog_app\": \"$a\", \"train\": \"$(tn_train "$a")\", \"values\": $values}"
+        "[{\"app_name\": \"$a\", \"catalog_app\": \"$a\", \"train\": \"$(tn_train "$a")\", \"values\": $values}]"
     fi
   done
 }
@@ -444,7 +481,7 @@ uninstall() {
   confirm "Continue?" || { info "Cancelled. Nothing was changed."; exit 0; }
   local a
   for a in ${apps//,/ }; do
-    if tn_app_exists "$a"; then run "Removing app $a" tn_job app.delete "$a" '{"remove_images": false}'; fi
+    if tn_app_exists "$a"; then run "Removing app $a" tn_job app.delete "[\"$a\", {\"remove_images\": false}]"; fi
   done
   if [[ $MODE == catalog ]] && docker network inspect "$NET" >/dev/null 2>&1; then
     run "Removing network '$NET'" docker network rm "$NET"

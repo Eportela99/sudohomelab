@@ -5,7 +5,7 @@ Stream, request and automate your whole library: Jellyfin and/or Plex, Seerr, Ra
 | Platform | Script | Status |
 | --- | --- | --- |
 | Ubuntu / Debian | [`linux/media-stack.sh`](linux/media-stack.sh) | 🧪 Beta |
-| TrueNAS SCALE 24.10+ | [`truenas/media-stack.sh`](truenas/media-stack.sh) | 🧪 Beta (testing) |
+| TrueNAS SCALE 24.10+ | [`truenas/media-stack.sh`](truenas/media-stack.sh) | 🧪 Beta (tested on 25.10) |
 | Proxmox, Windows, macOS | not written yet | Planned |
 
 `truenas/media-stack.sh` loads `linux/media-stack.sh` as a library, so both share the same wiring code. `truenas/test/` has a `midclt` test double and a validator for catalog-app values.
@@ -64,8 +64,10 @@ Options: `--server=jellyfin|plex|both`, `--downloader=qbittorrent|sabnzbd|both`,
 Run it in the TrueNAS shell (System → Shell, or SSH as an admin):
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/truenas/media-stack.sh)"
+curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/truenas/media-stack.sh -o /tmp/media-stack.sh && sudo bash /tmp/media-stack.sh
 ```
+
+> On TrueNAS, download first and then run the file, as above. TrueNAS turns on sudo's `log_subcmds`, and its sudo 1.9.13 kills `sudo bash -c "$(curl …)"` (the whole script ends up as one huge command, exit 137). For the same reason the installer never puts passwords or API keys in command arguments or environment variables, so they don't land in TrueNAS's logs.
 
 Same apps, menus and wiring as the Ubuntu version. It also asks **how the stack should appear in TrueNAS**:
 
@@ -83,6 +85,6 @@ Differences from Ubuntu:
 Uninstall (the media dataset is never touched; `--purge` also deletes `<pool>/apps/mediastack`):
 
 ```bash
-sudo bash -c "$(curl -fsSL <truenas url>)" _ --uninstall --purge
+curl -fsSL <truenas url> -o /tmp/media-stack.sh && sudo bash /tmp/media-stack.sh --uninstall --purge
 ```
 

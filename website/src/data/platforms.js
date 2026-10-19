@@ -9,6 +9,12 @@ const unix = (f) => f.map(([k, v]) => (v === true ? ` --${k}` : ` --${k}=${v}`))
 // `sudo bash -c "$(curl …)"` keeps the terminal in the foreground so scripts can
 // ask questions; `curl … | sudo bash` freezes at the first prompt on current sudo.
 const sudoBash = (url, f) => `sudo bash -c "$(curl -fsSL ${url})"${f.length ? ' _' + unix(f) : ''}`
+// TrueNAS: download first, then run the file. Its sudo logs every subcommand
+// (log_subcmds) and kills `bash -c "<whole script>"` (exit 137).
+const fileRun = (url, f) => {
+  const file = `/tmp/${url.split('/').pop()}`
+  return `curl -fsSL ${url} -o ${file} && sudo bash ${file}${unix(f)}`
+}
 const ps = (f) => f.map(([k, v]) => ` -${k[0].toUpperCase()}${k.slice(1)}${v === true ? '' : ` ${v}`}`).join('')
 
 export const PLATFORMS = [
@@ -20,7 +26,7 @@ export const PLATFORMS = [
     shell: 'bash',
     note: 'Run in the Proxmox host shell. Creates a dedicated LXC container.',
     ext: 'sh',
-    cmd: (path, f = []) /* path from scriptPath() */ => `bash <(curl -fsSL ${SCRIPT_BASE}/${path})${unix(f)}`,
+    cmd: (path, f = []) => `bash <(curl -fsSL ${SCRIPT_BASE}/${path})${unix(f)}`,
   },
   {
     id: 'linux',
@@ -30,7 +36,7 @@ export const PLATFORMS = [
     shell: 'bash',
     note: 'Ubuntu / Debian. Installs Docker if missing, then deploys with Compose.',
     ext: 'sh',
-    cmd: (path, f = []) /* path from scriptPath() */ => sudoBash(`${SCRIPT_BASE}/${path}`, f),
+    cmd: (path, f = []) => sudoBash(`${SCRIPT_BASE}/${path}`, f),
   },
   {
     id: 'truenas',
@@ -38,9 +44,9 @@ export const PLATFORMS = [
     short: 'TrueNAS',
     icon: 'truenas-scale',
     shell: 'bash',
-    note: 'Run from the TrueNAS shell. Deploys as a custom app on your pool.',
+    note: 'Run in the TrueNAS shell. Installs as one Custom App or as catalog apps on your pool.',
     ext: 'sh',
-    cmd: (path, f = []) /* path from scriptPath() */ => sudoBash(`${SCRIPT_BASE}/${path}`, f),
+    cmd: (path, f = []) => fileRun(`${SCRIPT_BASE}/${path}`, f),
   },
   {
     id: 'windows',
@@ -50,7 +56,7 @@ export const PLATFORMS = [
     shell: 'powershell',
     note: 'Run in an elevated PowerShell. Uses Docker Desktop / WSL2 or native installers.',
     ext: 'ps1',
-    cmd: (path, f = []) /* path from scriptPath() */ =>
+    cmd: (path, f = []) =>
       f.length
         ? `& ([scriptblock]::Create((irm ${SCRIPT_BASE}/${path})))${ps(f)}`
         : `irm ${SCRIPT_BASE}/${path} | iex`,
@@ -63,7 +69,7 @@ export const PLATFORMS = [
     shell: 'zsh',
     note: 'Run in Terminal. Uses Homebrew + OrbStack / Docker Desktop.',
     ext: 'sh',
-    cmd: (path, f = []) /* path from scriptPath() */ => `bash -c "$(curl -fsSL ${SCRIPT_BASE}/${path})"${f.length ? ' _' + unix(f) : ''}`,
+    cmd: (path, f = []) => `bash -c "$(curl -fsSL ${SCRIPT_BASE}/${path})"${f.length ? ' _' + unix(f) : ''}`,
   },
 ]
 
