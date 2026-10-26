@@ -27,6 +27,7 @@ PX_REPO_RAW="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/AdBlo
 LIB_URL="$PX_REPO_RAW/linux/pihole.sh"
 
 # ── Load the shared core (sibling file in a checkout, else download) ─────────
+px_core_ok() { grep -q '^\[\[ \${SHL_LIBRARY:-0} == 1 \]\] || main' "$CORE_FILE" 2>/dev/null && grep -q 'SHL_HINT_CMD' "$CORE_FILE"; }
 px_load_core() {
   local here=""
   [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]] && here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -35,7 +36,11 @@ px_load_core() {
   else
     CORE_FILE=$(mktemp /tmp/sudohomelab-core.XXXXXX)
     curl -fsSL "$LIB_URL" -o "$CORE_FILE" || { echo "Couldn't download the installer core from $LIB_URL" >&2; exit 1; }
+    # Right after a release GitHub can still serve an older core for a few minutes.
+    # An old one would run as a plain installer here on the host, so ask past the cache once.
+    px_core_ok || curl -fsSL "$LIB_URL?t=$(date +%s)" -o "$CORE_FILE" || true
   fi
+  px_core_ok || { echo "The installer core at $LIB_URL is an older version (GitHub's cache). Try again in 5 minutes." >&2; exit 1; }
   # shellcheck disable=SC1090
   SHL_LIBRARY=1 source "$CORE_FILE"
 }
