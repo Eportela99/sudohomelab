@@ -1357,6 +1357,11 @@ EOF
   fi
 }
 
+refresh_scheduled() { # → when the daily update runs next; fails if it isn't scheduled
+  systemctl is-active --quiet "$GRAVITY_UNIT.timer" || return 1
+  systemctl show -p NextElapseUSecRealtime --value "$GRAVITY_UNIT.timer" 2>/dev/null | awk '{print $2, $3}'
+}
+
 remove_refresh() {
   if [[ -f /etc/systemd/system/$GRAVITY_UNIT.timer ]]; then
     systemctl disable --now "$GRAVITY_UNIT.timer" 2>/dev/null || true
@@ -1926,7 +1931,7 @@ api_login_ok() {
 
 verify() {
   step "Checking that it works"
-  local fails=0 blocked_domain ans
+  local fails=0 blocked_domain ans next
 
   BLOCKED_COUNT=$(gravity_count)
   if [[ ${BLOCKED_COUNT:-0} -gt 0 ]]; then ok "Blocklists loaded: $(printf "%'d" "$BLOCKED_COUNT" 2>/dev/null || echo "$BLOCKED_COUNT") domains"
@@ -1977,7 +1982,7 @@ verify() {
   fi
 
   if [[ $REFRESH == daily ]]; then
-    if systemctl is-active --quiet "$GRAVITY_UNIT.timer"; then ok "Daily blocklist update scheduled ($(systemctl show -p NextElapseUSecRealtime --value "$GRAVITY_UNIT.timer" 2>/dev/null | awk '{print $2, $3}'))"
+    if next=$(refresh_scheduled); then ok "Daily blocklist update scheduled ($next)"
     else err "The daily update timer isn't active"; fails=1; fi
   fi
 
@@ -2014,6 +2019,8 @@ verify() {
   fi
   (( fails == 0 )) || warn "Some checks failed. Pi-hole is installed; see the log for details: $LOG_FILE"
 }
+
+manage_hint() { printf '    %sManage:%s    cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"; }
 
 summary() {
   step "Done"
@@ -2075,7 +2082,7 @@ summary() {
   printf '    %s%d.%s YouTube ads can'"'"'t be blocked by DNS (use uBlock Origin in the browser).\n' "$C_GREEN" $((n++)) "$C_RESET"
 
   echo
-  [[ -z ${SHL_HINT_CMD:-} ]] && printf '    %sManage:%s    cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"
+  [[ -z ${SHL_HINT_CMD:-} ]] && manage_hint
   printf '    %sMenu:%s      %s   %s(install · list/add/delete names · uninstall)%s\n' "$C_GRAY" "$C_RESET" "$(run_hint)" "$C_GRAY" "$C_RESET"
   printf '    %sUninstall:%s %s\n' "$C_GRAY" "$C_RESET" "$(run_hint " --uninstall")"
   printf '    %sLog:%s       %s\n' "$C_GRAY" "$C_RESET" "$LOG_FILE"

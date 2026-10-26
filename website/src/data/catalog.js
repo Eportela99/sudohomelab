@@ -12,7 +12,7 @@ const SERVER = ['proxmox', 'linux', 'truenas']
 
 // Shared by Pi-hole, Unbound and Nginx Proxy Manager: one script installs all three.
 const DNS_UNINSTALL = {
-  uninstall: 'Removes Pi-hole, Unbound and the proxy and gives port 53 back to your system (on Proxmox: deletes its container). Keeps your settings, lists, app names and certificates.',
+  uninstall: 'Removes Pi-hole, Unbound and the proxy and gives port 53 back to your system (on Proxmox: deletes its container; on TrueNAS: moves the web interface back to 80/443). Keeps your settings, lists, app names and certificates.',
   purge: 'Removes Pi-hole, Unbound and the proxy and deletes their settings, lists, app names, certificates and query history.',
   safe: 'Point your router\'s DNS somewhere else first.',
 }
@@ -51,6 +51,15 @@ const DNS_DOCS = [
       'Optional Tailscale in the container: it joins your tailnet as pihole, with an auth key or a login link.',
       'Settings stay on the host in /opt/sudohomelab/pihole, so uninstalling can keep them and a reinstall comes back on the same address.',
       '`--ip=192.168.1.53/24` · `--tailscale` · `--tailscale-key-file=FILE` · `--storage` · `--ctid`',
+    ],
+  },
+  {
+    title: 'On TrueNAS',
+    text: 'One Custom App (pihole) with its settings in a <pool>/apps/pihole dataset. TrueNAS\'s web interface uses ports 80/443, which the app names need, so it offers to move it to 8000/8443, checks TrueNAS answers there and moves it back if not. Uninstall puts it back on 80/443.',
+    items: [
+      'TrueNAS is then at https://<nas-ip>:8443 and https://truenas.home.',
+      'Choose Keep it (`--keep-ui`) and the app names use other ports instead (https://jellyfin.home:8443).',
+      'The daily blocklist update is a TrueNAS cron job. Port 53 must be free (it won\'t stop other apps for you).',
     ],
   },
   {
@@ -185,21 +194,21 @@ export const CATEGORIES = [
       {
         id: 'pihole', name: 'Pi-hole', icon: 'pi-hole', desc: 'Network-wide ad blocker and DNS server. Installs with Unbound and Nginx Proxy Manager, so apps get names like jellyfin.home.', ports: [53, 8080], platforms: SERVER, min: { ram: 1, cpu: 1 }, tags: ['dns', 'adblock', 'unbound', 'proxy'],
         status: 'beta',
-        available: ['linux', 'proxmox'],
+        available: ['linux', 'proxmox', 'truenas'],
         uninstall: DNS_UNINSTALL,
         docs: DNS_DOCS,
       },
       { id: 'adguard', name: 'AdGuard Home', icon: 'adguard-home', desc: 'Modern ad blocker with DoH/DoT and per-client rules.', ports: [53, 3000], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['dns', 'adblock'] },
       { id: 'unbound', name: 'Unbound', icon: 'unbound', desc: 'Recursive DNS resolver, so no upstream provider sees your lookups.', ports: [5335], platforms: SERVER, min: { ram: 0.25, cpu: 1 }, tags: ['dns', 'privacy'],
-        status: 'beta', available: ['linux', 'proxmox'], script: 'pihole', uninstall: DNS_UNINSTALL, docs: DNS_DOCS, note: 'Installed by the Private DNS Stack script, together with Pi-hole and Nginx Proxy Manager.' },
+        status: 'beta', available: ['linux', 'proxmox', 'truenas'], script: 'pihole', uninstall: DNS_UNINSTALL, docs: DNS_DOCS, note: 'Installed by the Private DNS Stack script, together with Pi-hole and Nginx Proxy Manager.' },
       { id: 'npm', name: 'Nginx Proxy Manager', icon: 'nginx-proxy-manager', desc: 'Reverse proxy with a GUI and free Let\'s Encrypt certificates.', ports: [80, 443, 81], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['proxy', 'ssl'],
-        status: 'beta', available: ['linux', 'proxmox'], script: 'pihole', uninstall: DNS_UNINSTALL, docs: DNS_DOCS, note: 'Installed by the Private DNS Stack script, together with Pi-hole and Unbound.' },
+        status: 'beta', available: ['linux', 'proxmox', 'truenas'], script: 'pihole', uninstall: DNS_UNINSTALL, docs: DNS_DOCS, note: 'Installed by the Private DNS Stack script, together with Pi-hole and Unbound.' },
       { id: 'caddy', name: 'Caddy', icon: 'caddy', desc: 'Zero-config reverse proxy with automatic HTTPS.', ports: [80, 443], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['proxy', 'ssl'] },
     ],
     stack: {
       id: 'dns-stack',
       name: 'Private DNS Stack',
-      available: ['linux', 'proxmox'],
+      available: ['linux', 'proxmox', 'truenas'],
       script: 'pihole',        // AdBlock_DNS_Proxy/linux/pihole.sh installs the whole stack
       flags: false,            // its choices are asked while installing
       uninstall: DNS_UNINSTALL,

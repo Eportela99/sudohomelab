@@ -4,7 +4,7 @@ Block ads network-wide and put every app behind a clean URL.
 
 | App | What it does | Platform | Status |
 | --- | --- | --- | --- |
-| **Private DNS Stack:** Pi-hole + Unbound + Nginx Proxy Manager | Ad blocking, private DNS, and names like `https://jellyfin.home` for your apps | Ubuntu / Debian: [`linux/pihole.sh`](linux/pihole.sh)<br>Proxmox VE 8 / 9: [`proxmox/pihole.sh`](proxmox/pihole.sh) | 🧪 Beta |
+| **Private DNS Stack:** Pi-hole + Unbound + Nginx Proxy Manager | Ad blocking, private DNS, and names like `https://jellyfin.home` for your apps | Ubuntu / Debian: [`linux/pihole.sh`](linux/pihole.sh)<br>Proxmox VE 8 / 9: [`proxmox/pihole.sh`](proxmox/pihole.sh)<br>TrueNAS SCALE 24.10+: [`truenas/pihole.sh`](truenas/pihole.sh) | 🧪 Beta |
 | AdGuard Home | Ad blocker with DoH/DoT and per-client rules | | Planned |
 | Caddy | Reverse proxy with automatic HTTPS | | Planned |
 
@@ -186,6 +186,33 @@ Shell into it with `pct enter <id>`; the compose project is in `/opt/sudohomelab
 
 Tested on Proxmox VE 9.2 (nested test VM, Debian 13 container): fresh install with the wizard, add/list/delete names from the menu, re-run, adding Tailscale to an existing container, uninstall keeping settings, reinstall on the same address, purge.
 
+## TrueNAS SCALE 24.10+
+
+In the TrueNAS shell (System → Shell, or SSH), download first and then run the file:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/AdBlock_DNS_Proxy/truenas/pihole.sh -o /tmp/pihole.sh && sudo bash /tmp/pihole.sh
+```
+
+> Not `sudo bash -c "$(curl …)"`: TrueNAS turns on sudo's `log_subcmds`, and its sudo kills a command whose text is a whole script.
+
+Same menu, questions, checks and app names. Nothing is installed on the TrueNAS OS:
+
+- **One Custom App** named `pihole` (Apps → Installed) runs Pi-hole, Unbound and the proxy. Settings go in a new dataset, `<pool>/apps/pihole` (it asks for the pool when there's more than one; `--pool=NAME`).
+- **TrueNAS's web interface uses ports 80 and 443**, which the app names need. It asks to move it to **8000 / 8443** (default yes; `--move-ui` / `--keep-ui`), checks that TrueNAS answers on the new port, and moves it back if it doesn't. The move runs on its own, so it also finishes when you run this from the TrueNAS web shell (the page reconnects; if it doesn't, open `https://<nas-ip>:8443` and run the command again). Afterwards TrueNAS is at `https://<nas-ip>:8443` and `https://truenas.home`. **Uninstall moves it back.** Keep it where it is and the app names get other ports instead (`https://jellyfin.home:8443`).
+- **Port 53** has to be free. If another app holds it (say a catalog Pi-hole), it tells you which and stops: on a NAS it doesn't stop things for you.
+- The daily blocklist update is a TrueNAS cron job (System → Advanced → Cron Jobs).
+- Passwords never go on a command line, so TrueNAS's sudo log never sees them.
+
+```bash
+sudo bash /tmp/pihole.sh --install --yes                  # moves the web interface (default)
+sudo bash /tmp/pihole.sh --install --keep-ui --yes
+sudo bash /tmp/pihole.sh --add=jellyfin=localhost:8096    # an app on the NAS itself
+sudo bash /tmp/pihole.sh --uninstall [--purge]            # --purge also deletes the dataset
+```
+
+Tested on TrueNAS SCALE 25.10.1 (VM, with 12 media apps running): fresh install with the wizard and with flags, moving the web interface and moving it back, `truenas.home` through the proxy (websockets work), names for apps on the NAS, add/delete, re-run, uninstall keeping settings, reinstall, purge.
+
 ## Coming next
 
-AdGuard Home as an alternative to Pi-hole, and a TrueNAS SCALE version of this installer.
+AdGuard Home as an alternative to Pi-hole.

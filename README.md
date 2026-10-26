@@ -12,7 +12,7 @@ Each project is a folder with one subfolder per platform (`linux/`, `truenas/`, 
 | --- | --- | --- |
 | [Media_Stack](Media_Stack) | Jellyfin/Plex, Seerr, *arr apps, downloaders, pre-wired | 🧪 Beta: Ubuntu, TrueNAS |
 | [Dashboards](Dashboards) | Homarr, Homepage, CasaOS, Glance | Planned |
-| [AdBlock_DNS_Proxy](AdBlock_DNS_Proxy) | Private DNS Stack: Pi-hole + Unbound + Nginx Proxy Manager, app names like `jellyfin.home` | 🧪 Beta: Ubuntu, Proxmox |
+| [AdBlock_DNS_Proxy](AdBlock_DNS_Proxy) | Private DNS Stack: Pi-hole + Unbound + Nginx Proxy Manager, app names like `jellyfin.home` | 🧪 Beta: Ubuntu, Proxmox, TrueNAS |
 | [Self_Hosted_Cloud](Self_Hosted_Cloud) | Nextcloud Suite, Immich, Vaultwarden, Syncthing | Planned |
 | [AI_Tools](AI_Tools) | Ollama, Open WebUI, MCP servers, OpenCode, n8n | Planned |
 | [Home_Automation](Home_Automation) | Home Assistant, MQTT, Zigbee2MQTT, Node-RED | Planned |
