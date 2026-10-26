@@ -13,6 +13,7 @@
 #
 #  All the wiring (logins, API keys, root folders, download clients, Prowlarr,
 #  Seerr, Bazarr, Tdarr) is the Linux script's code, loaded as a library.
+#  Audiobookshelf and Komga (extras) only get their folders, no wiring.
 #
 #  Usage (TrueNAS shell): download first, then run the file.
 #    curl -fsSL <url>/Media_Stack/truenas/media-stack.sh -o /tmp/media-stack.sh && sudo bash /tmp/media-stack.sh
@@ -43,7 +44,7 @@ tn_load_core() {
 tn_load_core
 
 # ── TrueNAS defaults (override the core's) ────────────────────────────────────
-VERSION="0.1.1-truenas (core $VERSION)"
+VERSION="0.1.2-truenas (core $VERSION)"
 SCRIPT_URL="$TN_REPO_RAW/truenas/media-stack.sh"
 LOG_FILE="$LOG_DIR/media-stack-truenas-$(date +%Y%m%d-%H%M%S).log"
 PUID=568; PGID=568          # TrueNAS's built-in "apps" user
@@ -269,6 +270,7 @@ tn_wanted_apps() { # install order: downloaders, *arrs, media servers, extras, S
   a+=(prowlarr radarr sonarr); want lidarr && a+=(lidarr)
   want jellyfin && a+=(jellyfin); want plex && a+=(plex)
   want bazarr && a+=(bazarr); want tdarr && a+=(tdarr)
+  want audiobookshelf && a+=(audiobookshelf); want komga && a+=(komga)
   a+=(seerr)
   echo "${a[@]}"
 }
@@ -385,6 +387,14 @@ elif app == "tdarr":
         "logs": hp(f"{cfg}/tdarr/logs"), "transcodes": hp(f"{data}/Transcode_Cache"),
     })
     del v["storage"]["config"]
+elif app == "audiobookshelf":
+    v[app] = {"additional_envs": []}
+    del v["network"]["host_network"]     # not in this app's schema
+    v["storage"] = {"config": hp(f"{cfg}/audiobookshelf/config"), "metadata": hp(f"{cfg}/audiobookshelf/metadata"),
+                    "additional_storage": [hp(f"{data}/Audiobooks", "/audiobooks")]}
+elif app == "komga":
+    v[app] = {"additional_envs": []}
+    v["storage"]["additional_storage"] = [hp(f"{data}/Books", "/data")]
 print(json.dumps(v))
 PY
   done
@@ -395,6 +405,7 @@ tn_port_of() {
     radarr) echo "$P_RADARR" ;; sonarr) echo "$P_SONARR" ;; prowlarr) echo "$P_PROWLARR" ;; lidarr) echo "$P_LIDARR" ;;
     qbittorrent) echo "$P_QBIT" ;; sabnzbd) echo "$P_SAB" ;; jellyfin) echo "$P_JELLYFIN" ;; plex) echo "$P_PLEX" ;;
     bazarr) echo "$P_BAZARR" ;; tdarr) echo "$P_TDARR" ;; seerr) echo "$P_SEERR" ;;
+    audiobookshelf) echo "$P_ABS" ;; komga) echo "$P_KOMGA" ;;
   esac
 }
 

@@ -100,7 +100,7 @@ export const CATEGORIES = [
       options: [
         { key: 'server', label: 'Media server', type: 'one', choices: ['plex', 'jellyfin'], default: 'jellyfin' },
         { key: 'downloader', label: 'Download client', type: 'many', choices: ['qbittorrent', 'sabnzbd'], default: ['qbittorrent'] },
-        { key: 'extras', label: 'Extras', type: 'many', choices: ['lidarr', 'bazarr', 'tdarr'], default: [] },
+        { key: 'extras', label: 'Extras', type: 'many', choices: ['lidarr', 'bazarr', 'tdarr', 'audiobookshelf', 'komga'], default: [] },
       ],
       core: ['seerr', 'radarr', 'sonarr', 'prowlarr'],
       // "How it works" walk-through shown under the stack builder.
@@ -113,14 +113,16 @@ export const CATEGORIES = [
           { title: 'Download', apps: ['qbittorrent', 'sabnzbd'], text: 'qBittorrent (torrents) and/or SABnzbd (Usenet) download into Active_Downloads. Both share one login with the *arr apps.' },
           { title: 'Import', apps: ['radarr', 'sonarr'], text: 'When a download finishes, Radarr or Sonarr renames it and puts it in Movies or TV_Shows. Everything sits under one /data folder, so this is an instant hardlink: no copy, no double disk space, and torrents keep seeding.' },
           { title: 'Watch', apps: ['jellyfin', 'plex'], text: 'Jellyfin or Plex reads the same Movies and TV_Shows folders, so the new title shows up in your library, and Seerr marks the request as available.' },
-          { title: 'Extras', apps: ['bazarr', 'lidarr', 'tdarr'], text: 'Bazarr watches Radarr and Sonarr and downloads subtitles in your languages. Lidarr runs the same flow for music into Music. Tdarr can re-encode your library to save space (off until you choose a Flow).' },
+          { title: 'Extras', apps: ['bazarr', 'lidarr', 'tdarr', 'audiobookshelf', 'komga'], text: 'Bazarr watches Radarr and Sonarr and downloads subtitles in your languages. Lidarr runs the same flow for music into Music. Tdarr can re-encode your library to save space (off until you choose a Flow). Audiobookshelf and Komga (Linux and TrueNAS) are readers: they get their own Audiobooks and Books folders, ready for you to fill.' },
         ],
         folders: [
           ['/data', 'one data folder (default /srv/media), mounted in every container'],
           ['├─ Active_Downloads', 'qBittorrent / SABnzbd download here'],
           ['├─ Movies', 'Radarr imports → Jellyfin / Plex'],
           ['├─ TV_Shows', 'Sonarr imports → Jellyfin / Plex'],
-          ['└─ Music', 'Lidarr imports (extra)'],
+          ['├─ Music', 'Lidarr imports (extra)'],
+          ['├─ Audiobooks', 'Audiobookshelf library (extra)'],
+          ['└─ Books', 'Komga: Comics, Ebooks, Manga (extra)'],
         ],
         left: 'Left for you: add indexers in Prowlarr, create your Jellyfin/Plex account and libraries, and sign in to Seerr.',
       },

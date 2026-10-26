@@ -9,6 +9,7 @@
 #    · Prowlarr         → syncs indexers to Radarr & Sonarr
 #    · Seerr            → Radarr & Sonarr pre-configured
 #    · qBittorrent / SABnzbd → download folders + categories
+#  Optional extras: Lidarr, Bazarr, Tdarr, Audiobookshelf, Komga.
 #
 #  Usage:
 #    sudo bash -c "$(curl -fsSL <url>/media-stack.sh)"
@@ -19,7 +20,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.3.4"
+VERSION="0.3.5"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/linux/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
@@ -46,6 +47,7 @@ LSIO="lscr.io/linuxserver"
 P_JELLYFIN=8096; P_PLEX=32400; P_QBIT=8080; P_TORRENT=6881; P_SAB=8085
 P_RADARR=7878; P_SONARR=8989; P_PROWLARR=9696; P_SEERR=5055
 P_LIDARR=8686; P_BAZARR=6767; P_TDARR=8265; P_TDARR_SRV=8266
+P_ABS=13378; P_KOMGA=25600
 
 # How the apps reach EACH OTHER (host name / port inside the shared network).
 # One compose project: service names + the images' internal ports. The TrueNAS
@@ -55,7 +57,9 @@ H_LIDARR=lidarr; I_LIDARR=8686; H_QBIT=qbittorrent; H_SAB=sabnzbd; I_SAB=8080; H
 # qBittorrent's web UI listens on the same port inside and out, so I_QBIT follows P_QBIT (see i_qbit).
 SEERR_UID=1000   # Seerr's image runs as uid 1000
 TDARR_IMAGE="ghcr.io/haveagitgat/tdarr:latest"
-EXTRAS=""          # comma list of: lidarr, bazarr, tdarr
+ABS_IMAGE="ghcr.io/advplyr/audiobookshelf:latest"
+KOMGA_IMAGE="gotson/komga:latest"
+EXTRAS=""          # comma list of: lidarr, bazarr, tdarr, audiobookshelf, komga
 EXTRAS_SET=0
 SUB_LANGS=""       # Bazarr subtitle languages, e.g. en,es
 
@@ -286,7 +290,8 @@ Usage: sudo bash media-stack.sh [options]
   --install-dir=PATH                 Compose file + app configs (default $INSTALL_DIR)
   --username=NAME                    Login for Radarr/Sonarr/Prowlarr/downloaders
   --password=PASS                    Password for those apps (generated if omitted)
-  --extras=lidarr,bazarr,tdarr       Optional apps (or "none")
+  --extras=lidarr,bazarr,tdarr,audiobookshelf,komga
+                                     Optional apps (or "none")
   --subtitle-langs=en,es             Bazarr subtitle languages (default en)
   --plex-claim=TOKEN                 Claim token from https://plex.tv/claim (optional)
   -y, --yes                          Non-interactive, accept defaults
@@ -330,7 +335,7 @@ was_installed() { # same as want(), against the previous run's choices
   case $1 in
     jellyfin|plex) [[ $PREV_SERVER == "$1" || $PREV_SERVER == both ]] ;;
     qbittorrent|sabnzbd) [[ $PREV_DOWNLOADER == "$1" || $PREV_DOWNLOADER == both ]] ;;
-    lidarr|bazarr|tdarr) [[ ,${PREV_EXTRAS:-}, == *,$1,* ]] ;;
+    lidarr|bazarr|tdarr|audiobookshelf|komga) [[ ,${PREV_EXTRAS:-}, == *,$1,* ]] ;;
   esac
 }
 
@@ -338,7 +343,7 @@ want() { # want jellyfin|plex|qbittorrent|sabnzbd
   case $1 in
     jellyfin|plex) [[ $SERVER == "$1" || $SERVER == both ]] ;;
     qbittorrent|sabnzbd) [[ $DOWNLOADER == "$1" || $DOWNLOADER == both ]] ;;
-    lidarr|bazarr|tdarr) [[ ,$EXTRAS, == *,$1,* ]] ;;
+    lidarr|bazarr|tdarr|audiobookshelf|komga) [[ ,$EXTRAS, == *,$1,* ]] ;;
   esac
 }
 
@@ -516,7 +521,7 @@ ask_credentials() {
   fi
 }
 
-EXTRA_APPS=(lidarr bazarr tdarr)
+EXTRA_APPS=(lidarr bazarr tdarr audiobookshelf komga)
 
 # Multi-select: type numbers ("1 3"), "a" for all, "n" for none, Enter = default.
 ask_extras() {
@@ -530,6 +535,8 @@ ask_extras() {
     printf '    %s1)%s %-14s %s%s%s\n' "$C_GREEN" "$C_RESET" "Lidarr" "$C_GRAY" "music collection manager, wired like Radarr/Sonarr" "$C_RESET"
     printf '    %s2)%s %-14s %s%s%s\n' "$C_GREEN" "$C_RESET" "Bazarr" "$C_GRAY" "automatic subtitles for your movies and shows" "$C_RESET"
     printf '    %s3)%s %-14s %s%s%s\n' "$C_GREEN" "$C_RESET" "Tdarr" "$C_GRAY" "transcode / shrink your library (CPU heavy)" "$C_RESET"
+    printf '    %s4)%s %-14s %s%s%s\n' "$C_GREEN" "$C_RESET" "Audiobookshelf" "$C_GRAY" "audiobook & podcast server (folder: Audiobooks)" "$C_RESET"
+    printf '    %s5)%s %-14s %s%s%s\n' "$C_GREEN" "$C_RESET" "Komga" "$C_GRAY" "comics, manga & ebooks reader (folder: Books)" "$C_RESET"
   } >/dev/tty
   while :; do
     printf '  %s›%s Numbers separated by spaces, a = all, n = none %s(default: %s)%s: ' \
@@ -543,9 +550,9 @@ ask_extras() {
       *)
         n=0
         for pick in ${ans//,/ }; do
-          if [[ $pick =~ ^[1-3]$ ]]; then picked+=("${EXTRA_APPS[pick - 1]}"); else n=1; fi
+          if [[ $pick =~ ^[1-5]$ ]]; then picked+=("${EXTRA_APPS[pick - 1]}"); else n=1; fi
         done
-        if (( n )); then printf '    %sUse 1, 2 or 3 (e.g. "1 2"), a or n.%s\n' "$C_YELLOW" "$C_RESET" >/dev/tty; continue; fi
+        if (( n )); then printf '    %sUse 1 to 5 (e.g. "1 4"), a or n.%s\n' "$C_YELLOW" "$C_RESET" >/dev/tty; continue; fi
         ;;
     esac
     break
@@ -558,7 +565,7 @@ normalize_extras() { # drop unknown names (the website lists a few future extras
   [[ ${EXTRAS,,} == none ]] && { EXTRAS=""; return; }
   for e in ${EXTRAS//,/ }; do
     case $e in
-      lidarr|bazarr|tdarr) out+=("$e") ;;
+      lidarr|bazarr|tdarr|audiobookshelf|komga) out+=("$e") ;;
       *) warn "Extra '$e' isn't supported by this script yet; skipping it." ;;
     esac
   done
@@ -646,7 +653,7 @@ choose_options() {
   servers=$(want jellyfin && echo -n "Jellyfin "; want plex && echo -n "Plex"; true)
   dls=$(want qbittorrent && echo -n "qBittorrent "; want sabnzbd && echo -n "SABnzbd"; true)
   local extras_txt
-  extras_txt=$(want lidarr && echo -n "Lidarr "; want bazarr && echo -n "Bazarr (subtitles: $SUB_LANGS) "; want tdarr && echo -n "Tdarr"; true)
+  extras_txt=$(want lidarr && echo -n "Lidarr "; want bazarr && echo -n "Bazarr (subtitles: $SUB_LANGS) "; want tdarr && echo -n "Tdarr "; want audiobookshelf && echo -n "Audiobookshelf "; want komga && echo -n "Komga"; true)
   printf '    %-16s %s\n' "Media server" "$servers" "Downloads" "$dls" "Automation" "Seerr · Radarr · Sonarr · Prowlarr" \
     "Extras" "${extras_txt:-none}" "Media folder" "$DATA_DIR" "App configs" "$INSTALL_DIR" "Login" "$APP_USER"
   plan_extra
@@ -656,7 +663,7 @@ choose_options() {
   # Warn before a re-run drops an app that's installed today (its config folder is kept).
   local removed=() app
   if [[ -n $PREV_SERVER ]]; then
-    for app in jellyfin plex qbittorrent sabnzbd lidarr bazarr tdarr; do
+    for app in jellyfin plex qbittorrent sabnzbd lidarr bazarr tdarr audiobookshelf komga; do
       if was_installed "$app" && ! want "$app"; then removed+=("$app"); fi
     done
   fi
@@ -680,6 +687,8 @@ stack_images() { # images this selection needs
   want lidarr && imgs+=("$LSIO/lidarr:latest")
   want bazarr && imgs+=("$LSIO/bazarr:latest")
   want tdarr && imgs+=("$TDARR_IMAGE")
+  want audiobookshelf && imgs+=("$ABS_IMAGE")
+  want komga && imgs+=("$KOMGA_IMAGE")
   want qbittorrent && imgs+=("$LSIO/qbittorrent:latest")
   want sabnzbd && imgs+=("$LSIO/sabnzbd:latest")
   printf '%s\n' "${imgs[@]}"
@@ -690,7 +699,8 @@ stack_images() { # images this selection needs
 image_gb() {
   case $1 in
     *tdarr*) echo 6.0 ;; *seerr*) echo 1.6 ;; *jellyfin*) echo 1.7 ;; *plex*) echo 0.9 ;;
-    *bazarr*) echo 0.8 ;; *lidarr*) echo 0.6 ;; *qbittorrent*) echo 0.45 ;; *) echo 0.4 ;;
+    *bazarr*) echo 0.8 ;; *lidarr*) echo 0.6 ;; *qbittorrent*) echo 0.45 ;; *komga*) echo 1.1 ;;
+    *audiobookshelf*) echo 0.7 ;; *) echo 0.4 ;;
   esac
 }
 
@@ -773,7 +783,7 @@ check_disk() {
 # fixed 32400), qBittorrent's web UI (same port inside and out, a linuxserver
 # CSRF requirement) and the torrent port (peers must reach the announced port).
 
-PORT_VARS=(P_JELLYFIN P_PLEX P_QBIT P_TORRENT P_SAB P_RADARR P_SONARR P_PROWLARR P_SEERR P_LIDARR P_BAZARR P_TDARR P_TDARR_SRV)
+PORT_VARS=(P_JELLYFIN P_PLEX P_QBIT P_TORRENT P_SAB P_RADARR P_SONARR P_PROWLARR P_SEERR P_LIDARR P_BAZARR P_TDARR P_TDARR_SRV P_ABS P_KOMGA)
 
 port_label() {
   case $1 in
@@ -781,6 +791,7 @@ port_label() {
     P_TORRENT) echo "qBittorrent torrent traffic" ;; P_SAB) echo "SABnzbd" ;; P_RADARR) echo "Radarr" ;;
     P_SONARR) echo "Sonarr" ;; P_PROWLARR) echo "Prowlarr" ;; P_SEERR) echo "Seerr" ;;
     P_LIDARR) echo "Lidarr" ;; P_BAZARR) echo "Bazarr" ;; P_TDARR) echo "Tdarr web UI" ;; P_TDARR_SRV) echo "Tdarr server (nodes)" ;;
+    P_ABS) echo "Audiobookshelf" ;; P_KOMGA) echo "Komga" ;;
   esac
 }
 
@@ -788,7 +799,7 @@ port_needed() { # is this port variable used by the current selection?
   case $1 in
     P_JELLYFIN) want jellyfin ;; P_PLEX) want plex ;; P_QBIT|P_TORRENT) want qbittorrent ;;
     P_SAB) want sabnzbd ;; P_LIDARR) want lidarr ;; P_BAZARR) want bazarr ;;
-    P_TDARR|P_TDARR_SRV) want tdarr ;; *) return 0 ;;
+    P_TDARR|P_TDARR_SRV) want tdarr ;; P_ABS) want audiobookshelf ;; P_KOMGA) want komga ;; *) return 0 ;;
   esac
 }
 
@@ -796,8 +807,17 @@ port_needed() { # is this port variable used by the current selection?
 # (empty if free). Containers of this stack count as free: a re-run reuses them.
 port_owner() { # port_owner port [udp]
   local p=$1 proto=${2:-tcp} line proc name
+  # Docker folds neighbouring ports into a range ("0.0.0.0:8265-8266->8265-8266/tcp").
   name=$(docker ps --format '{{.Names}}	{{.Ports}}' 2>/dev/null |
-    awk -F'\t' -v a=":$p->" -v b="]:$p->" 'index($2, a) || index($2, b) {print $1; exit}')
+    awk -F'\t' -v p="$p" -v proto="$proto" '{
+      n = split($2, m, ", ")
+      for (i = 1; i <= n; i++) {
+        if (m[i] !~ ("/" proto "$") || !match(m[i], /:[0-9]+(-[0-9]+)?->/)) continue
+        r = substr(m[i], RSTART + 1, RLENGTH - 3); lo = r; hi = r
+        if (split(r, b, "-") == 2) { lo = b[1]; hi = b[2] }
+        if (p + 0 >= lo + 0 && p + 0 <= hi + 0) { print $1; exit }
+      }
+    }')
   if [[ -n $name ]]; then
     our_project "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$name" 2>/dev/null)" && return 0
     echo "container \"$name\""; return 0
@@ -1031,6 +1051,8 @@ prepare_folders() {
   want lidarr && mkdir -p "$INSTALL_DIR/config/lidarr"
   want bazarr && mkdir -p "$INSTALL_DIR/config/bazarr"
   want tdarr && mkdir -p "$INSTALL_DIR"/config/tdarr/{server,configs,logs}
+  want audiobookshelf && mkdir -p "$INSTALL_DIR"/config/audiobookshelf/{config,metadata}
+  want komga && mkdir -p "$INSTALL_DIR/config/komga"
 
   # One /data tree shared by every container, so Radarr/Sonarr can hardlink
   # finished downloads into the library instead of copying them.
@@ -1043,7 +1065,11 @@ prepare_folders() {
     want sabnzbd && mkdir -p "$DATA_DIR/Active_Downloads/usenet/complete/music"
   fi
   want tdarr && mkdir -p "$DATA_DIR/Transcode_Cache"
+  want audiobookshelf && mkdir -p "$DATA_DIR/Audiobooks"
+  want komga && mkdir -p "$DATA_DIR"/Books/{Comics,Ebooks,Manga}
   ok "Media library:  $DATA_DIR/Movies  ·  $DATA_DIR/TV_Shows$(want lidarr && echo "  ·  $DATA_DIR/Music"; true)"
+  want audiobookshelf && ok "Audiobooks:     $DATA_DIR/Audiobooks"
+  want komga && ok "Books:          $DATA_DIR/Books/Comics  ·  Ebooks  ·  Manga"
   ok "Downloads:      $DATA_DIR/Active_Downloads"
 
   # Pre-seed API keys so every app knows the others' keys before first boot.
@@ -1089,6 +1115,15 @@ EOF
     else
       info "qBittorrent config exists, leaving it untouched"
     fi
+  fi
+
+  # SABnzbd saves the port it listens on. Keep it on the one this layout expects
+  # (TrueNAS catalog mode uses the published port, compose the image's 8080).
+  local sini="$INSTALL_DIR/config/sabnzbd/sabnzbd.ini"
+  # Only the [misc] one: each usenet server under [servers] has its own port line.
+  if want sabnzbd && [[ -f $sini ]]; then
+    sed -i "/^\[misc\]/,/^\[/ s/^port = .*/port = $I_SAB/" "$sini"
+    log "sabnzbd.ini web port: $I_SAB"
   fi
 
   chown -R "$PUID:$PGID" "$INSTALL_DIR/config"
@@ -1292,6 +1327,41 @@ EOF
 ${gpu}
 EOF
     fi
+    # Reading apps: no wiring, they just get their folders. Both run as PUID:PGID.
+    if want audiobookshelf; then cat <<EOF
+  audiobookshelf:
+    image: $ABS_IMAGE
+    container_name: audiobookshelf
+    restart: unless-stopped
+    user: "\${PUID}:\${PGID}"
+    environment:
+      TZ: \${TZ}
+      PORT: "13378"
+    ports:
+      - "$P_ABS:13378"
+    volumes:
+      - ./config/audiobookshelf/config:/config
+      - ./config/audiobookshelf/metadata:/metadata
+      - \${DATA_DIR}/Audiobooks:/audiobooks
+
+EOF
+    fi
+    if want komga; then cat <<EOF
+  komga:
+    image: $KOMGA_IMAGE
+    container_name: komga
+    restart: unless-stopped
+    user: "\${PUID}:\${PGID}"
+    environment:
+      TZ: \${TZ}
+    ports:
+      - "$P_KOMGA:25600"
+    volumes:
+      - ./config/komga:/config
+      - \${DATA_DIR}/Books:/data
+
+EOF
+    fi
     cat <<EOF
   seerr:
     image: $SEERR_IMAGE
@@ -1342,6 +1412,8 @@ start_stack() {
   fi
   want bazarr && run "Waiting for Bazarr" wait_for Bazarr "http://localhost:$P_BAZARR/" 240
   want tdarr && run "Waiting for Tdarr" wait_for Tdarr "http://localhost:$P_TDARR/api/v2/status" 300
+  want audiobookshelf && run "Waiting for Audiobookshelf" wait_for Audiobookshelf "http://localhost:$P_ABS/healthcheck" 180
+  want komga && run "Waiting for Komga" wait_for Komga "http://localhost:$P_KOMGA/" 240
   return 0
 }
 
@@ -1699,6 +1771,12 @@ verify() {
   if want tdarr; then
     if [[ $(http_code "http://localhost:$P_TDARR/api/v2/status") == 200 ]]; then ok "Tdarr is up (internal node, login required)"; else warn "Tdarr is not responding yet"; fi
   fi
+  if want audiobookshelf; then
+    if [[ $(http_code "http://localhost:$P_ABS/healthcheck") == 200 ]]; then ok "Audiobookshelf is up (folder: $DATA_DIR/Audiobooks)"; else warn "Audiobookshelf is not responding yet"; fi
+  fi
+  if want komga; then
+    if [[ $(http_code "http://localhost:$P_KOMGA/") =~ ^(200|30[0-9])$ ]]; then ok "Komga is up (folders: $DATA_DIR/Books/Comics, Ebooks, Manga)"; else warn "Komga is not responding yet"; fi
+  fi
   return 0
 }
 
@@ -1724,6 +1802,8 @@ summary() {
     want lidarr && echo "Lidarr       http://$ip:$P_LIDARR      API key: ${LIDARR_KEY:-}"
     want bazarr && echo "Bazarr       http://$ip:$P_BAZARR      API key: ${BAZARR_KEY:-}"
     want tdarr && echo "Tdarr        http://$ip:$P_TDARR      (same login; libraries created with transcoding OFF)"
+    want audiobookshelf && echo "Audiobookshelf http://$ip:$P_ABS    (create your own admin on first visit)"
+    want komga && echo "Komga        http://$ip:$P_KOMGA     (create your own admin on first visit)"
     echo
     echo "Folders (inside every container the data folder is /data)"
     echo "  Movies     $DATA_DIR/Movies      → /data/Movies"
@@ -1731,6 +1811,8 @@ summary() {
     echo "  Downloads  $DATA_DIR/Active_Downloads → /data/Active_Downloads"
     want lidarr && echo "  Music      $DATA_DIR/Music       → /data/Music"
     want tdarr && echo "  Tdarr cache $DATA_DIR/Transcode_Cache → /temp"
+    want audiobookshelf && echo "  Audiobooks $DATA_DIR/Audiobooks  → /audiobooks (Audiobookshelf)"
+    want komga && echo "  Books      $DATA_DIR/Books       → /data (Komga): Comics, Ebooks, Manga"
   } >"$f"
   umask 022
 
@@ -1747,6 +1829,8 @@ summary() {
   want lidarr && printf "$row" "$C_BOLD" "Lidarr" "$C_RESET" "$C_CYAN" "http://$ip:$P_LIDARR" "$C_RESET"
   want bazarr && printf "$row" "$C_BOLD" "Bazarr" "$C_RESET" "$C_CYAN" "http://$ip:$P_BAZARR" "$C_RESET"
   want tdarr && printf "$row" "$C_BOLD" "Tdarr" "$C_RESET" "$C_CYAN" "http://$ip:$P_TDARR" "$C_RESET"
+  want audiobookshelf && printf "$row" "$C_BOLD" "Audiobooks" "$C_RESET" "$C_CYAN" "http://$ip:$P_ABS" "$C_RESET"
+  want komga && printf "$row" "$C_BOLD" "Komga" "$C_RESET" "$C_CYAN" "http://$ip:$P_KOMGA" "$C_RESET"
 
   printf '\n    %sLogin%s  %s / %s%s\n' "$C_GRAY" "$C_RESET" "$APP_USER" "$APP_PASS" \
     "$( [[ ${GENERATED_PASS:-0} == 1 ]] && printf '  %s(generated, saved below)%s' "$C_GRAY" "$C_RESET")"
@@ -1770,6 +1854,8 @@ summary() {
   want lidarr && printf '    %s%d.%s %sLidarr%s → ready; also add a Music library (%s/data/Music%s) in your media server.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_CYAN" "$C_RESET"
   want bazarr && printf '    %s%d.%s %sBazarr%s → Settings → Providers: pick subtitle sites (e.g. OpenSubtitles.com needs a free account).\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET"
   want tdarr && printf '    %s%d.%s %sTdarr%s → Movies & TV_Shows libraries are ready with transcoding %sOFF%s. Pick a Flow, then turn on Transcodes.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET"
+  want audiobookshelf && printf '    %s%d.%s %sAudiobookshelf%s → create the root user, then add a library with folder %s/audiobooks%s.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_CYAN" "$C_RESET"
+  want komga && printf '    %s%d.%s %sKomga%s → create the admin, then add libraries %s/data/Comics%s, %s/data/Ebooks%s and %s/data/Manga%s.\n' "$C_GREEN" $((n++)) "$C_RESET" "$C_BOLD" "$C_RESET" "$C_CYAN" "$C_RESET" "$C_CYAN" "$C_RESET" "$C_CYAN" "$C_RESET"
 
   manage_hint
   printf '    %sLog:%s    %s\n' "$C_GRAY" "$C_RESET" "$LOG_FILE"

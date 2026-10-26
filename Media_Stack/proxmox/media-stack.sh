@@ -198,6 +198,8 @@ px_size_defaults() { # size the container from the chosen apps, unless set by fl
   want jellyfin && want plex && mem=$((mem + 1024))
   want lidarr && mem=$((mem + 512))
   want bazarr && mem=$((mem + 512))
+  want audiobookshelf && mem=$((mem + 256))
+  want komga && mem=$((mem + 1024))
   want tdarr && { cores=4; mem=$((mem + 2048)); }
   : "${CT_CORES:=$cores}"; : "${CT_MEMORY:=$mem}"
 }
@@ -302,6 +304,8 @@ install_docker() {
   local d dirs=(Movies TV_Shows Active_Downloads)
   want lidarr && dirs+=(Music)
   want tdarr && dirs+=(Transcode_Cache)
+  want audiobookshelf && dirs+=(Audiobooks)
+  want komga && dirs+=(Books Books/Comics Books/Ebooks Books/Manga)
   for d in "${dirs[@]}"; do mkdir -p "$DATA_DIR/$d"; done
   local h=$((UID_SHIFT + APP_UID))
   px_own "$h:$h" "$DATA_DIR"

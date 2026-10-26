@@ -1,6 +1,6 @@
 # Media Stack
 
-Stream, request and automate your whole library: Jellyfin and/or Plex, Seerr, Radarr, Sonarr, Prowlarr, qBittorrent and/or SABnzbd, plus optional Lidarr, Bazarr and Tdarr. Every app is installed **already connected** to the others.
+Stream, request and automate your whole library: Jellyfin and/or Plex, Seerr, Radarr, Sonarr, Prowlarr, qBittorrent and/or SABnzbd, plus optional Lidarr, Bazarr, Tdarr, Audiobookshelf and Komga. Every app is installed **already connected** to the others.
 
 | Platform | Script | Status |
 | --- | --- | --- |
@@ -30,6 +30,8 @@ It always installs **Seerr, Radarr, Sonarr and Prowlarr**. Optional **extras** (
 - **Lidarr:** music, with `/data/Music`, download clients (category `music`) and Prowlarr indexer sync
 - **Bazarr:** subtitles, connected to Radarr and Sonarr, with a language profile you choose (e.g. `en,es`) set as the default
 - **Tdarr:** transcoding, with the admin account created and **Movies** and **TV_Shows** libraries set up with transcoding **off** until you pick a Flow
+- **Audiobookshelf** (Linux, TrueNAS): audiobooks and podcasts, with its own `Audiobooks` folder (mounted at `/audiobooks`). No wiring, just the folder
+- **Komga** (Linux, TrueNAS): comics, manga and ebooks, with `Books/Comics`, `Books/Ebooks` and `Books/Manga` (the `Books` folder is mounted at `/data`). No wiring, just the folders
 
 Then it:
 
@@ -40,7 +42,7 @@ Then it:
 - connects **Prowlarr → Radarr + Sonarr**, so indexers you add sync automatically
 - pre-configures **Seerr** with Radarr and Sonarr
 
-What's left for you: add indexers in Prowlarr, create your Jellyfin/Plex account and libraries, and sign in to Seerr. With extras: pick subtitle providers in Bazarr, and choose a Flow in Tdarr.
+What's left for you: add indexers in Prowlarr, create your Jellyfin/Plex account and libraries, and sign in to Seerr. With extras: pick subtitle providers in Bazarr, choose a Flow in Tdarr, and create your admin account plus libraries in Audiobookshelf (`/audiobooks`) and Komga (`/data/Comics`, `/data/Ebooks`, `/data/Manga`).
 
 **Uninstall** (your media is never touched, `--purge` also deletes app configs):
 
@@ -54,7 +56,7 @@ sudo bash -c "$(curl -fsSL <url>)" _ --uninstall --purge
 curl -fsSL <url> | sudo bash -s -- --server=jellyfin --downloader=qbittorrent --yes
 ```
 
-Options: `--server=jellyfin|plex|both`, `--downloader=qbittorrent|sabnzbd|both`, `--extras=lidarr,bazarr,tdarr|none`, `--subtitle-langs=en,es`, `--data-dir=PATH`, `--username=NAME`, `--password=PASS`, `--plex-claim=TOKEN`, `--dry-run`, `--uninstall [--purge]`, `--help`.
+Options: `--server=jellyfin|plex|both`, `--downloader=qbittorrent|sabnzbd|both`, `--extras=lidarr,bazarr,tdarr,audiobookshelf,komga|none`, `--subtitle-langs=en,es`, `--data-dir=PATH`, `--username=NAME`, `--password=PASS`, `--plex-claim=TOKEN`, `--dry-run`, `--uninstall [--purge]`, `--help`.
 
 - **Logs:** `/var/log/sudohomelab/media-stack-*.log`
 - **Credentials:** `/opt/sudohomelab/media-stack/credentials.txt` (root only)
