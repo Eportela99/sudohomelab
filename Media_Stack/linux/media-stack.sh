@@ -21,7 +21,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.3.6"
+VERSION="0.3.7"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/linux/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
@@ -69,6 +69,7 @@ SMB_SHARE=Media
 SMB_UNIX=shl-smb  # Samba account; clients log in with APP_USER through a username map
 SMB_INC=/etc/samba/sudohomelab-media.conf
 SMB_MAP=/etc/samba/sudohomelab-users.map
+SMB_WSD=/etc/samba/sudohomelab-wsdd   # names the discovery package we installed, if any
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -1827,10 +1828,42 @@ EOF
 
   systemctl enable smbd >/dev/null 2>&1 || true
   systemctl restart smbd || { echo "Samba (smbd) didn't start: see journalctl -u smbd"; return 1; }
+  smb_discovery || echo "Couldn't set up network discovery: the share still works at \\\\$HOST_IP\\$SMB_SHARE"
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-    ufw allow Samba >/dev/null && echo "Firewall: allowed Samba"
+    ufw allow Samba >/dev/null && ufw allow 3702/udp >/dev/null && ufw allow 5357/tcp >/dev/null && echo "Firewall: allowed Samba + network discovery"
   fi
   echo "Share \\\\$HOST_IP\\$SMB_SHARE → $DATA_DIR (login $APP_USER, files owned by $owner)"
+}
+
+# Windows 10/11 only list servers that announce themselves over WS-Discovery
+# (Samba doesn't). wsdd2 (Debian) also answers LLMNR, so \\<hostname> resolves.
+smb_discovery() {
+  local pkg="" cand ifc bin
+  [[ -f $SMB_WSD ]] && pkg=$(cat "$SMB_WSD")          # ours from an earlier run
+  if [[ -z $pkg ]]; then
+    for cand in wsdd2 wsdd; do                         # yours: leave its settings alone
+      dpkg -s "$cand" >/dev/null 2>&1 && { echo "Network discovery: $cand was already installed, using it as is"; return 0; }
+    done
+    for cand in wsdd2 wsdd; do
+      [[ $(apt-cache policy "$cand" 2>/dev/null | sed -n 's/^ *Candidate: //p' || true) =~ ^[0-9] ]] && { pkg=$cand; break; }
+    done
+    [[ -n $pkg ]] || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get -y -o DPkg::Lock::Timeout=300 install --no-install-recommends "$pkg" >/dev/null || return 1
+    echo "$pkg" >"$SMB_WSD"
+  fi
+  # Answer on the LAN only: by default it also announces Docker's bridge
+  # addresses, which Windows can't reach.
+  ifc=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}' || true)
+  bin=$(command -v "$pkg" || echo "/usr/sbin/$pkg")
+  if [[ -n $ifc ]]; then
+    mkdir -p "/etc/systemd/system/$pkg.service.d"
+    printf '[Service]\nExecStart=\nExecStart=%s%s -i %s\n' "$bin" "$( [[ $pkg == wsdd ]] && echo " --shortlog")" "$ifc" \
+      >"/etc/systemd/system/$pkg.service.d/sudohomelab.conf"
+    systemctl daemon-reload
+  fi
+  systemctl enable "$pkg" >/dev/null 2>&1 || true
+  systemctl restart "$pkg" || return 1
+  echo "Network discovery: $pkg${ifc:+ on $ifc}, so the server shows up in Windows' Network view"
 }
 
 smb_remove() { # undo smb_setup; leaves the Samba package and your files alone
@@ -1840,6 +1873,14 @@ smb_remove() { # undo smb_setup; leaves the Samba package and your files alone
   [[ -n $map && $map != "$SMB_MAP" && -f $map ]] && sed -i "/^$SMB_UNIX = /d" "$map"
   sed -i -e "\|^# sudo homelab media share$|d" -e "\|^include = $SMB_INC$|d" -e "\|^\s*username map = $SMB_MAP$|d" "$conf"
   rm -f "$SMB_INC" "$SMB_MAP"
+  if [[ -f $SMB_WSD ]]; then # only the discovery package we added ourselves
+    local pkg
+    pkg=$(cat "$SMB_WSD")
+    DEBIAN_FRONTEND=noninteractive apt-get -y -o DPkg::Lock::Timeout=300 purge "$pkg" >/dev/null 2>&1 || true
+    rm -rf "/etc/systemd/system/$pkg.service.d/sudohomelab.conf" "$SMB_WSD"
+    rmdir "/etc/systemd/system/$pkg.service.d" 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+  fi
   smbpasswd -x "$SMB_UNIX" >/dev/null 2>&1 || true
   userdel "$SMB_UNIX" 2>/dev/null || true
   systemctl restart smbd 2>/dev/null || true
