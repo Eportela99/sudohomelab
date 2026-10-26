@@ -4,7 +4,7 @@ Block ads network-wide and put every app behind a clean URL.
 
 | App | What it does | Platform | Status |
 | --- | --- | --- | --- |
-| **Private DNS Stack:** Pi-hole + Unbound + Nginx Proxy Manager | Ad blocking, private DNS, and names like `https://jellyfin.home` for your apps | Ubuntu / Debian: [`linux/pihole.sh`](linux/pihole.sh) | 🧪 Beta |
+| **Private DNS Stack:** Pi-hole + Unbound + Nginx Proxy Manager | Ad blocking, private DNS, and names like `https://jellyfin.home` for your apps | Ubuntu / Debian: [`linux/pihole.sh`](linux/pihole.sh)<br>Proxmox VE 8 / 9: [`proxmox/pihole.sh`](proxmox/pihole.sh) | 🧪 Beta |
 | AdGuard Home | Ad blocker with DoH/DoT and per-client rules | | Planned |
 | Caddy | Reverse proxy with automatic HTTPS | | Planned |
 
@@ -157,6 +157,35 @@ All options: `sudo bash pihole.sh --help`. Also `--lists=URL,URL` (your own bloc
 
 Tested on Ubuntu 26.04, with CasaOS already on port 80 and Tailscale on the same machine. See the test notes in the commit history.
 
+## Proxmox VE 8 / 9
+
+Run in the Proxmox host shell (root):
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/AdBlock_DNS_Proxy/proxmox/pihole.sh)"
+```
+
+Same menu. Install creates one small unprivileged Debian container (`pihole`, tag `sudohomelab-dns`, 2 cores, 1 GB RAM, 8 GB disk) and runs the Ubuntu/Debian installer inside it, so the questions, blocklists, checks and app names are the same. Before that it asks:
+
+- **A fixed address.** Your devices use it as their DNS server, so it must never change. It suggests a free one in the host's network (`.53` first) and checks that nothing answers on the address you type. Pick one outside your router's DHCP range, or reserve it there. `dhcp` works too, but then reserve the address in the router.
+- **Where the disk lives** (when there's more than one storage).
+- **Tailscale (optional).** The container gets `/dev/net/tun`, Tailscale is installed in it, and it joins your tailnet as `pihole`, with an auth key (`tskey-auth-…`) or a login link. It runs with `--accept-dns=false`, so Tailscale never takes over the container's own DNS. Then answer **Any network** in the Pi-hole questions, so it answers over Tailscale too.
+
+The settings live on the host in `/opt/sudohomelab/pihole` (mounted into the container), so **Uninstall** can delete the container and keep them: Install again later brings the same address, password, lists and app names back. List / Add / Delete run inside the container for you. Re-running Install updates the container in place, and saying yes to Tailscale on a re-run adds it to an existing container.
+
+```bash
+bash -c "$(curl -fsSL <url>)" _ --install --ip=192.168.1.53/24 --yes
+bash -c "$(curl -fsSL <url>)" _ --install --tailscale --tailscale-key-file=/root/ts.key --yes
+bash -c "$(curl -fsSL <url>)" _ --add=jellyfin=192.168.1.50:8096
+bash -c "$(curl -fsSL <url>)" _ --uninstall [--purge]
+```
+
+Proxmox options: `--ctid`, `--storage`, `--bridge`, `--ip`, `--gateway`, `--cores`, `--memory`, `--disk`, `--tailscale` / `--no-tailscale`, `--tailscale-key-file`, `--settings-dir`. Every other option goes to the installer inside the container. Passwords and tokens reach it as root-only files, never as command arguments.
+
+Shell into it with `pct enter <id>`; the compose project is in `/opt/sudohomelab/pihole`. Back it up with Datacenter → Backup (or `vzdump <id> --mode snapshot`). Uninstalling also logs the container out of Tailscale; remove the old `pihole` machine in the Tailscale admin console.
+
+Tested on Proxmox VE 9.2 (nested test VM, Debian 13 container): fresh install with the wizard, add/list/delete names from the menu, re-run, adding Tailscale to an existing container, uninstall keeping settings, reinstall on the same address, purge.
+
 ## Coming next
 
-AdGuard Home as an alternative to Pi-hole, and Proxmox / TrueNAS versions of this installer.
+AdGuard Home as an alternative to Pi-hole, and a TrueNAS SCALE version of this installer.

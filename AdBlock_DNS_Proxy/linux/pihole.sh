@@ -28,7 +28,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.3.1"
+VERSION="0.3.2"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/AdBlock_DNS_Proxy/linux/pihole.sh"
 INSTALL_DIR="/opt/sudohomelab/pihole"
 LOG_DIR="/var/log/sudohomelab"
@@ -160,6 +160,7 @@ die() {
 }
 
 banner() {
+  [[ -n ${SHL_NO_BANNER:-} ]] && return 0   # a wrapper (Proxmox) already showed its own
   printf '%s' "$C_GREEN"
   cat <<'EOF'
 
@@ -259,7 +260,8 @@ tty_foreground() {
 
 has_tty() { [[ -r /dev/tty ]] && { : </dev/tty; } 2>/dev/null && tty_foreground; }
 
-run_hint() { echo "sudo bash -c \"\$(curl -fsSL $SCRIPT_URL)\"${1:+ _$1}"; }
+# SHL_HINT_CMD: set by a wrapper (Proxmox) that runs this script for you.
+run_hint() { echo "${SHL_HINT_CMD:-sudo bash -c \"\$(curl -fsSL $SCRIPT_URL)\"}${1:+ _$1}"; }
 
 check_interactive() {
   (( ASSUME_YES )) && return 0
@@ -351,6 +353,7 @@ Actions:
 
 Install options:
   --password=PASS                    Admin password for Pi-hole and the proxy (generated if omitted)
+  --password-file=FILE               The same, read from a file (keeps it out of the process list)
   --blocklists=light|balanced|aggressive|classic
                                      Blocklist preset (default balanced)
   --extras=smarttv,devices,doh,gambling,nsfw
@@ -374,6 +377,7 @@ Install options:
   --cert=local|letsencrypt           HTTPS certificates: this machine's own (default), or
                                      Let's Encrypt for your own domain (DNS on Cloudflare)
   --cloudflare-token=TOKEN           Cloudflare API token (Zone · DNS · Edit) for --cert=letsencrypt
+  --cloudflare-token-file=FILE       The same, read from a file
   --email=ADDRESS                    Proxy admin login (default admin@<domain>); with
                                      Let's Encrypt, a real address for expiry notices
   --web-port=PORT                    Pi-hole admin page HTTP port (default 8080, or the next free one)
@@ -385,6 +389,7 @@ EOF
 }
 
 WEB_PORT_SET=0
+read_secret_file() { [[ -r $1 ]] || { echo "Can't read $1" >&2; exit 2; }; head -n1 "$1" | tr -d '\r\n'; }
 set_action() {
   [[ -z $ACTION || $ACTION == "$1" ]] || { echo "Choose one action: --$ACTION or --$1" >&2; exit 2; }
   ACTION=$1
@@ -393,6 +398,7 @@ parse_args() {
   for arg in "$@"; do
     case $arg in
       --password=*) APP_PASS=${arg#*=} ;;
+      --password-file=*) APP_PASS=$(read_secret_file "${arg#*=}") || exit 2 ;;
       --blocklists=*) BLOCKLISTS=${arg#*=} ;;
       --extras=*) EXTRAS=${arg#*=}; EXTRAS_SET=1 ;;
       --allowlists=*) ALLOWLISTS=${arg#*=}; ALLOWLISTS_SET=1 ;;
@@ -407,6 +413,7 @@ parse_args() {
       --domain=*) DOMAIN=${arg#*=}; DOMAIN=${DOMAIN,,}; DOMAIN=${DOMAIN#.} ;;
       --cert=*) CERT_MODE=${arg#*=} ;;
       --cloudflare-token=*) CF_TOKEN=${arg#*=} ;;
+      --cloudflare-token-file=*) CF_TOKEN=$(read_secret_file "${arg#*=}") || exit 2 ;;
       --email=*) ADMIN_EMAIL=${arg#*=} ;;
       --web-port=*) P_WEB=${arg#*=}; WEB_PORT_SET=1 ;;
       --install-dir=*) INSTALL_DIR=${arg#*=} ;;
@@ -2067,7 +2074,8 @@ summary() {
   printf '    %s%d.%s Something broke? Admin page → Query Log → find the blocked domain → Allow.\n' "$C_GREEN" $((n++)) "$C_RESET"
   printf '    %s%d.%s YouTube ads can'"'"'t be blocked by DNS (use uBlock Origin in the browser).\n' "$C_GREEN" $((n++)) "$C_RESET"
 
-  printf '\n    %sManage:%s    cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"
+  echo
+  [[ -z ${SHL_HINT_CMD:-} ]] && printf '    %sManage:%s    cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"
   printf '    %sMenu:%s      %s   %s(install · list/add/delete names · uninstall)%s\n' "$C_GRAY" "$C_RESET" "$(run_hint)" "$C_GRAY" "$C_RESET"
   printf '    %sUninstall:%s %s\n' "$C_GRAY" "$C_RESET" "$(run_hint " --uninstall")"
   printf '    %sLog:%s       %s\n' "$C_GRAY" "$C_RESET" "$LOG_FILE"
@@ -2199,4 +2207,4 @@ choose_action() {
   esac
 }
 
-main "$@"
+[[ ${SHL_LIBRARY:-0} == 1 ]] || main "$@"
