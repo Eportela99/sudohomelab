@@ -3,7 +3,7 @@ import { appById, categoryById } from '../data/catalog'
 import { platformById } from '../data/platforms'
 import { go, spotlight } from '../hooks'
 import { AppIcon, Icon, Rich, StatusBadge } from './Bits'
-import { InstallBox } from './Install'
+import { InstallBox, OfficialInstall } from './Install'
 
 const fmtRam = (gb) => (gb < 1 ? `${Math.round(gb * 1024)} MB` : `${gb} GB`)
 
@@ -111,7 +111,11 @@ export function AppDrawer({ appId, onClose }) {
         {app.note && <div className="drawer-note">ⓘ {app.note}</div>}
 
         <h4 className="drawer-h">Install</h4>
-        <InstallBox name={app.name} folder={cat.folder} script={app.script || app.id} supported={app.platforms} available={app.available} notes={app.uninstall} accent={cat.accent} />
+        {app.official ? (
+          <OfficialInstall app={app} accent={cat.accent} />
+        ) : (
+          <InstallBox name={app.name} folder={cat.folder} script={app.script || app.id} supported={app.platforms} available={app.available} notes={app.uninstall} accent={cat.accent} />
+        )}
 
         {friends.length > 0 && (
           <>

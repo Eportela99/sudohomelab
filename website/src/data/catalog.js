@@ -175,9 +175,124 @@ export const CATEGORIES = [
     accent: '#57c7ff',
     glyph: '▦',
     apps: [
-      { id: 'homarr', name: 'Homarr', icon: 'homarr', desc: 'Drag-and-drop dashboard with deep app integrations.', ports: [7575], platforms: ALL, min: { ram: 0.5, cpu: 1 }, tags: ['dashboard'] },
-      { id: 'homepage', name: 'Homepage', icon: 'homepage', desc: 'Fast, YAML-configured dashboard with 100+ service widgets.', ports: [3000], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['dashboard', 'yaml'] },
-      { id: 'casaos', name: 'CasaOS', icon: 'casaos', desc: 'Friendly home-cloud UI with a one-click app store.', ports: [80], platforms: ['proxmox', 'linux'], min: { ram: 1, cpu: 1 }, tags: ['dashboard', 'app-store'] },
+      {
+        id: 'homarr', name: 'Homarr', icon: 'homarr', desc: 'Drag-and-drop dashboard with deep app integrations.', ports: [7575], platforms: ALL, min: { ram: 0.5, cpu: 1 }, tags: ['dashboard'],
+        status: 'official',
+        official: {
+          site: 'https://homarr.dev',
+          docs: 'https://homarr.dev/docs/getting-started/installation/docker',
+          note: 'Homarr\'s official Docker image. It keeps its encryption key in a file next to its data: Homarr needs the same key every time it starts.',
+          how: {
+            linux: { cmd: "sudo mkdir -p /opt/homarr && sudo test -f /opt/homarr/secret.key || openssl rand -hex 32 | sudo tee /opt/homarr/secret.key >/dev/null; sudo docker run -d --name homarr --restart unless-stopped -p 7575:7575 -v /var/run/docker.sock:/var/run/docker.sock -v /opt/homarr/appdata:/appdata -e SECRET_ENCRYPTION_KEY=$(sudo cat /opt/homarr/secret.key) ghcr.io/homarr-labs/homarr:latest" },
+            proxmox: { cmd: 'bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/homarr.sh)"', note: 'The Proxmox VE Helper-Scripts (a community project) create a container with Homarr. Answer its questions, or take the defaults.' },
+            truenas: { steps: ['Apps → Discover Apps → search "Homarr" (community train).', 'Install. The defaults are fine; pick where its data lives if asked.', 'Open it from Apps → Installed → Homarr → Web UI.'], note: 'From the TrueNAS app catalog: TrueNAS makes the encryption key and handles updates.' },
+            windows: { cmd: "$f = \"$HOME\\homarr-secret.key\"; if (-not (Test-Path $f)) { $b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); -join ($b | ForEach-Object { $_.ToString('x2') }) | Set-Content $f }; docker run -d --name homarr --restart unless-stopped -p 7575:7575 -v homarr-appdata:/appdata -e \"SECRET_ENCRYPTION_KEY=$(Get-Content $f)\" ghcr.io/homarr-labs/homarr:latest" },
+            macos: { cmd: 'mkdir -p ~/homarr && { [ -f ~/homarr/secret.key ] || openssl rand -hex 32 > ~/homarr/secret.key; } && docker run -d --name homarr --restart unless-stopped -p 7575:7575 -v ~/homarr/appdata:/appdata -e SECRET_ENCRYPTION_KEY=$(cat ~/homarr/secret.key) ghcr.io/homarr-labs/homarr:latest' },
+          },
+        },
+        docs: [
+          { title: 'What it is', text: 'A start page for your lab: a board of tiles for your apps, with live widgets (downloads, media, calendar, system stats) for the ones it integrates with. You build it by dragging tiles in the browser, no config files.' },
+          {
+            title: 'After installing',
+            items: [
+              'Open `http://<server-ip>:7575` and follow onboarding: create the admin account, then your first board.',
+              'Add apps with Add → App: a name, the address you open it at, and an icon (it finds most icons by name).',
+              'Integrations (Jellyfin, *arr apps, qBittorrent, Pi-hole…): Manage → Integrations, with the app\'s address and API key. Use an address the Homarr container can reach, like `http://192.168.1.50:8096`, not `localhost`.',
+              'The Docker socket mount (Linux) lets Homarr show and start/stop your containers. Leave it out if you don\'t want that.',
+            ],
+          },
+          {
+            title: 'Updating',
+            text: 'Pull the new image, remove the container and run the same install command again. Your boards live in the appdata folder and the key file stays, so nothing is lost: `sudo docker pull ghcr.io/homarr-labs/homarr:latest && sudo docker rm -f homarr`, then the install command. Back up the appdata folder before a major version (v1 → v2).',
+          },
+          {
+            title: 'Uninstalling',
+            items: [
+              '`sudo docker rm -f homarr` removes Homarr and keeps its data in `/opt/homarr` (on Mac `~/homarr`, on Windows the `homarr-appdata` volume).',
+              'To delete everything too: `sudo rm -rf /opt/homarr`.',
+              'Proxmox: delete its container. TrueNAS: Apps → Homarr → Delete.',
+            ],
+          },
+          { title: 'With the Private DNS Stack', text: 'Give it a name: run the DNS script → Add domain, or `--add=homarr=<server-ip>:7575`, then open https://homarr.home.' },
+        ],
+      },
+      {
+        id: 'homepage', name: 'Homepage', icon: 'homepage', desc: 'Fast, YAML-configured dashboard with 100+ service widgets.', ports: [3000], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['dashboard', 'yaml'],
+        status: 'official',
+        official: {
+          site: 'https://gethomepage.dev',
+          docs: 'https://gethomepage.dev/installation/docker/',
+          note: 'Homepage\'s official Docker image. HOMEPAGE_ALLOWED_HOSTS must list every address you open it at (here: this machine\'s IP).',
+          how: {
+            linux: { cmd: "sudo docker run -d --name homepage --restart unless-stopped -p 3000:3000 -e HOMEPAGE_ALLOWED_HOSTS=$(hostname -I | awk '{print $1}'):3000 -v /opt/homepage/config:/app/config -v /var/run/docker.sock:/var/run/docker.sock:ro ghcr.io/gethomepage/homepage:latest" },
+            proxmox: { cmd: 'bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/homepage.sh)"', note: 'The Proxmox VE Helper-Scripts (a community project) create a container with Homepage. Its config files are in /opt/homepage/config inside it.' },
+            truenas: { steps: ['Apps → Discover Apps → search "Homepage" (community train).', 'Install. Set the allowed host to <nas-ip>:<the port it shows>.', 'Open it from Apps → Installed → Homepage → Web UI.'], note: 'From the TrueNAS app catalog.' },
+            windows: { cmd: '$ip = (Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | Select-Object -First 1).IPv4Address.IPAddress; docker run -d --name homepage --restart unless-stopped -p 3000:3000 -e "HOMEPAGE_ALLOWED_HOSTS=${ip}:3000" -v "$HOME\\homepage\\config:/app/config" ghcr.io/gethomepage/homepage:latest' },
+            macos: { cmd: 'docker run -d --name homepage --restart unless-stopped -p 3000:3000 -e HOMEPAGE_ALLOWED_HOSTS=$(ipconfig getifaddr en0):3000 -v ~/homepage/config:/app/config ghcr.io/gethomepage/homepage:latest' },
+          },
+        },
+        docs: [
+          { title: 'What it is', text: 'A fast, static start page set up with YAML files: your services in groups, each with a status dot and, for 100+ apps, a live widget (Jellyfin streams, Sonarr queue, Pi-hole blocked count…).' },
+          {
+            title: 'After installing',
+            items: [
+              'Open `http://<server-ip>:3000`. The first start writes example files to the config folder (`/opt/homepage/config` on Linux).',
+              '`services.yaml` your apps · `widgets.yaml` the top bar (clock, search, CPU/RAM) · `settings.yaml` title, theme, layout · `bookmarks.yaml` links. Save a file and reload the page: no restart needed.',
+              'A service with a widget: `- Jellyfin:` → `href: http://192.168.1.50:8096`, `widget: { type: jellyfin, url: http://192.168.1.50:8096, key: <api key> }`.',
+              'Containers on this machine (Linux, socket mounted): add `my-docker: { socket: /var/run/docker.sock }` to `docker.yaml`, then `server: my-docker` and `container: <name>` on a service for its status and stats.',
+            ],
+          },
+          {
+            title: '"Host validation failed"',
+            text: 'You opened it at an address that isn\'t in HOMEPAGE_ALLOWED_HOSTS (a new IP, or a name like homepage.home). Run it again with every address you use, comma-separated with no spaces, e.g. `-e HOMEPAGE_ALLOWED_HOSTS=192.168.1.50:3000,homepage.home`.',
+          },
+          {
+            title: 'Updating & uninstalling',
+            items: [
+              'Update: `sudo docker pull ghcr.io/gethomepage/homepage:latest && sudo docker rm -f homepage`, then the install command again. Your YAML files stay.',
+              'Uninstall: `sudo docker rm -f homepage` (keeps `/opt/homepage/config`); `sudo rm -rf /opt/homepage` deletes the config too.',
+              'Proxmox: delete its container. TrueNAS: Apps → Homepage → Delete.',
+            ],
+          },
+          { title: 'With the Private DNS Stack', text: 'Add a name with `--add=homepage=<server-ip>:3000`, and add `homepage.home` to HOMEPAGE_ALLOWED_HOSTS.' },
+        ],
+      },
+      {
+        id: 'casaos', name: 'CasaOS', icon: 'casaos', desc: 'Friendly home-cloud UI with a one-click app store.', ports: [80], platforms: ['proxmox', 'linux'], min: { ram: 1, cpu: 1 }, tags: ['dashboard', 'app-store'],
+        status: 'official',
+        official: {
+          site: 'https://casaos.zimaspace.com',
+          docs: 'https://github.com/IceWhaleTech/CasaOS',
+          note: 'CasaOS\'s official installer. It installs Docker too if it\'s missing, and prints the address to open when it finishes.',
+          how: {
+            linux: { cmd: 'curl -fsSL https://get.casaos.io | sudo bash' },
+            proxmox: { cmd: 'bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/casaos.sh)"', note: 'The Proxmox VE Helper-Scripts (a community project) create a container with CasaOS. Don\'t install CasaOS on the Proxmox host itself.' },
+          },
+        },
+        docs: [
+          { title: 'What it is', text: 'A friendly home-server desktop in the browser: a dashboard of your apps, a one-click App Store (Docker apps), a file manager and system stats. Good if you prefer clicking to the command line.' },
+          {
+            title: 'After installing',
+            items: [
+              'Open `http://<server-ip>` (port 80, or the next free port: the installer prints the address) and create your account.',
+              'App Store: install apps with one click. They\'re normal Docker containers, so they show in `docker ps` too.',
+              'Already running other Docker apps? Use Import in the App Store to show them as tiles.',
+            ],
+          },
+          {
+            title: 'Ports',
+            text: 'CasaOS takes port 80. The Private DNS Stack\'s proxy wants 80 too: installed on the same machine, the DNS script sees CasaOS and offers another port for plain http (https on 443 keeps working). CasaOS\'s own port can be changed in its settings (WebUI port).',
+          },
+          {
+            title: 'Updating & uninstalling',
+            items: [
+              'Update: CasaOS shows new versions in its settings; run the update from there.',
+              'Uninstall: `casaos-uninstall` (it asks whether to also remove the apps and their data).',
+              'Proxmox: delete its container.',
+            ],
+          },
+        ],
+      },
       { id: 'glance', name: 'Glance', icon: 'glance', desc: 'Minimal feed dashboard: RSS, weather, markets, releases.', ports: [8080], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['dashboard', 'feeds'] },
       { id: 'sudo-dash', name: 'sudo homelab Dash', icon: null, desc: 'Our own dashboard, auto-populated with every app you install from this site.', ports: [8000], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['original'], original: true },
     ],

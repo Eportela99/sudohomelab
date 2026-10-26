@@ -146,3 +146,68 @@ export function InstallBox({ name, folder, script, supported, available, flags =
     </div>
   )
 }
+
+const OFFICIAL_WHERE = {
+  proxmox: 'Run in the Proxmox host shell (root).',
+  linux: 'Ubuntu / Debian, with Docker installed.',
+  truenas: 'In the TrueNAS web interface.',
+  windows: 'PowerShell, with Docker Desktop running.',
+  macos: 'Terminal, with Docker Desktop or OrbStack running.',
+}
+
+// Apps installed with their project's own method (no sudo homelab script).
+// official: { site, docs, how: { <platform>: { cmd } | { steps: [..] } }, note }
+export function OfficialInstall({ app, accent }) {
+  const { platform, setPlatform } = usePlatform()
+  const p = platformById[platform]
+  const how = app.official.how[platform]
+  return (
+    <div className="install" style={{ '--accent': accent }}>
+      <PlatformSwitcher supported={app.platforms} compact />
+      {how ? (
+        <>
+          {how.cmd && (
+            <div className="cmd" key={platform + how.cmd}>
+              <span className="cmd-shell">{p.shell === 'powershell' ? 'PS>' : '$'}</span>
+              <code className="cmd-text">{highlight(how.cmd)}</code>
+              <CopyButton text={how.cmd} />
+            </div>
+          )}
+          {how.steps && (
+            <ol className="install-steps">
+              {how.steps.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ol>
+          )}
+          <p className="install-official">{how.note || app.official.note}</p>
+          <div className="install-foot">
+            <span className="install-note">
+              <AppIcon icon={p.icon} name={p.short} size={14} /> {how.where || OFFICIAL_WHERE[platform]}
+            </span>
+            <span className="install-actions">
+              <a className="btn-ghost sm" href={app.official.docs} target="_blank" rel="noreferrer">
+                <Icon.Arrow /> Official docs
+              </a>
+              <a className="btn-ghost sm" href={app.official.site} target="_blank" rel="noreferrer">
+                <Icon.Arrow /> Website
+              </a>
+            </span>
+          </div>
+        </>
+      ) : (
+        <div className="install-na">
+          <strong>{app.name} isn’t supported on {p.name}.</strong>
+          <span>
+            Available on:{' '}
+            {app.platforms.map((id) => (
+              <button key={id} className="link" onClick={() => setPlatform(id)}>
+                {platformById[id].name}
+              </button>
+            ))}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}

@@ -65,7 +65,7 @@ export function CopyButton({ text, label = 'Copy', className = '' }) {
 }
 
 export function StatusBadge({ status = 'planned' }) {
-  const label = { planned: 'Coming soon', beta: 'Beta', ready: 'Ready' }[status]
+  const label = { planned: 'Coming soon', beta: 'Beta', ready: 'Ready', official: 'Official install' }[status]
   return <span className={`badge badge-${status}`}>{label}</span>
 }
 
