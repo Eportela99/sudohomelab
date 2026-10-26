@@ -123,6 +123,7 @@ export const CATEGORIES = [
           ['├─ Music', 'Lidarr imports (extra)'],
           ['├─ Audiobooks', 'Audiobookshelf library (extra)'],
           ['└─ Books', 'Komga: Comics, Ebooks, Manga (extra)'],
+          ['\\\\server\\Media', 'optional SMB share of the whole folder, same login (Linux, Proxmox: --smb)'],
         ],
         left: 'Left for you: add indexers in Prowlarr, create your Jellyfin/Plex account and libraries, and sign in to Seerr.',
       },

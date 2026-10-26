@@ -10,6 +10,7 @@
 #    · Seerr            → Radarr & Sonarr pre-configured
 #    · qBittorrent / SABnzbd → download folders + categories
 #  Optional extras: Lidarr, Bazarr, Tdarr, Audiobookshelf, Komga.
+#  Optional SMB share of the media folder (\\server\Media, same login).
 #
 #  Usage:
 #    sudo bash -c "$(curl -fsSL <url>/media-stack.sh)"
@@ -20,7 +21,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
-VERSION="0.3.5"
+VERSION="0.3.6"
 SCRIPT_URL="https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/linux/media-stack.sh"
 INSTALL_DIR="/opt/sudohomelab/media-stack"
 DATA_DIR="/srv/media"
@@ -62,6 +63,12 @@ KOMGA_IMAGE="gotson/komga:latest"
 EXTRAS=""          # comma list of: lidarr, bazarr, tdarr, audiobookshelf, komga
 EXTRAS_SET=0
 SUB_LANGS=""       # Bazarr subtitle languages, e.g. en,es
+SMB=""            # yes | no: share the media folder over SMB
+SMB_SUPPORTED=1   # the TrueNAS script turns this off (it has its own sharing)
+SMB_SHARE=Media
+SMB_UNIX=shl-smb  # Samba account; clients log in with APP_USER through a username map
+SMB_INC=/etc/samba/sudohomelab-media.conf
+SMB_MAP=/etc/samba/sudohomelab-users.map
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -293,6 +300,7 @@ Usage: sudo bash media-stack.sh [options]
   --extras=lidarr,bazarr,tdarr,audiobookshelf,komga
                                      Optional apps (or "none")
   --subtitle-langs=en,es             Bazarr subtitle languages (default en)
+  --smb | --no-smb                   Share the media folder on your network as \\\\server\\$SMB_SHARE
   --plex-claim=TOKEN                 Claim token from https://plex.tv/claim (optional)
   -y, --yes                          Non-interactive, accept defaults
   --dry-run                          Show what would be installed, change nothing
@@ -315,6 +323,8 @@ parse_args() {
       --plex-claim=*) PLEX_CLAIM=${arg#*=} ;;
       --extras=*) EXTRAS=${arg#*=}; EXTRAS_SET=1 ;;
       --subtitle-langs=*) SUB_LANGS=${arg#*=} ;;
+      --smb|--smb=yes) SMB=yes ;;
+      --no-smb|--smb=no) SMB=no ;;
       -y|--yes) ASSUME_YES=1 ;;
       --dry-run) DRY_RUN=1 ;;
       --grow-disk) GROW_DISK=1 ;;
@@ -515,8 +525,10 @@ ask_credentials() {
     APP_PASS=$(head -c 96 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-16)
     GENERATED_PASS=1
     # Straight to the screen (not via ok/log) so the password never lands in the log.
-    printf '  %s✓%s Generated password: %s%s%s  %s(also saved to %s/credentials.txt)%s\n' \
-      "$C_GREEN" "$C_RESET" "$C_BOLD" "$APP_PASS" "$C_RESET" "$C_GRAY" "$INSTALL_DIR" "$C_RESET"
+    local where="also saved to $INSTALL_DIR/credentials.txt"
+    (( DRY_RUN )) && where="dry run: not saved, a real run makes a new one"
+    printf '  %s✓%s Generated password: %s%s%s  %s(%s)%s\n' \
+      "$C_GREEN" "$C_RESET" "$C_BOLD" "$APP_PASS" "$C_RESET" "$C_GRAY" "$where" "$C_RESET"
     log "OK   Generated a random password"
   fi
 }
@@ -576,12 +588,13 @@ choose_options() {
   step "Choose your stack"
 
   # Re-run: default to what's installed now, so nothing gets removed by accident.
-  PREV_SERVER=""; PREV_DOWNLOADER=""; PREV_EXTRAS=""; local prev_langs=""
+  PREV_SERVER=""; PREV_DOWNLOADER=""; PREV_EXTRAS=""; PREV_SMB=""; local prev_langs=""
   if [[ -f $INSTALL_DIR/.env ]]; then
     PREV_SERVER=$(sed -n 's/^STACK_SERVER=//p' "$INSTALL_DIR/.env")
     PREV_DOWNLOADER=$(sed -n 's/^STACK_DOWNLOADER=//p' "$INSTALL_DIR/.env")
     PREV_EXTRAS=$(sed -n 's/^STACK_EXTRAS=//p' "$INSTALL_DIR/.env")
     prev_langs=$(sed -n 's/^STACK_SUB_LANGS=//p' "$INSTALL_DIR/.env")
+    PREV_SMB=$(sed -n 's/^STACK_SMB=//p' "$INSTALL_DIR/.env")
     local prev_data
     prev_data=$(sed -n 's/^DATA_DIR=//p' "$INSTALL_DIR/.env")
     (( DATA_DIR_SET )) || DATA_DIR=${prev_data:-$DATA_DIR}
@@ -631,6 +644,17 @@ choose_options() {
   DATA_DIR=${DATA_DIR%/}
   [[ $DATA_DIR == /* ]] || die "Data folder must be an absolute path (got '$DATA_DIR')."
 
+  if (( SMB_SUPPORTED )); then
+    if [[ -z $SMB ]]; then
+      local a def=n hint="y/N"
+      [[ ${PREV_SMB:-no} == yes ]] && { def=y; hint="Y/n"; }
+      a=$(ask "Share the media folder on your network as \\\\${SMB_PLAN_HOST:-$HOST_IP}\\$SMB_SHARE (SMB, same login)? ($hint)" "$def")
+      if [[ ${a,,} =~ ^y(es)?$ ]]; then SMB=yes; else SMB=no; fi
+    fi
+  else
+    SMB=no
+  fi
+
   # Credentials: reuse from a previous run so re-running never breaks logins.
   if [[ -f $INSTALL_DIR/.secrets ]]; then
     APP_USER=$(sed -n 's/^APP_USER=//p' "$INSTALL_DIR/.secrets")
@@ -656,8 +680,9 @@ choose_options() {
   extras_txt=$(want lidarr && echo -n "Lidarr "; want bazarr && echo -n "Bazarr (subtitles: $SUB_LANGS) "; want tdarr && echo -n "Tdarr "; want audiobookshelf && echo -n "Audiobookshelf "; want komga && echo -n "Komga"; true)
   printf '    %-16s %s\n' "Media server" "$servers" "Downloads" "$dls" "Automation" "Seerr · Radarr · Sonarr · Prowlarr" \
     "Extras" "${extras_txt:-none}" "Media folder" "$DATA_DIR" "App configs" "$INSTALL_DIR" "Login" "$APP_USER"
+  (( SMB_SUPPORTED )) && printf '    %-16s %s\n' "Network share" "$( [[ $SMB == yes ]] && echo "\\\\${SMB_PLAN_HOST:-$HOST_IP}\\$SMB_SHARE (SMB, login $APP_USER)" || echo off)"
   plan_extra
-  log "Plan: server=$SERVER downloader=$DOWNLOADER extras=${EXTRAS:-none} data=$DATA_DIR install=$INSTALL_DIR user=$APP_USER"
+  log "Plan: server=$SERVER downloader=$DOWNLOADER extras=${EXTRAS:-none} smb=$SMB data=$DATA_DIR install=$INSTALL_DIR user=$APP_USER"
   printf '\n'
 
   # Warn before a re-run drops an app that's installed today (its config folder is kept).
@@ -670,6 +695,7 @@ choose_options() {
   if (( ${#removed[@]} )); then
     warn "This will REMOVE: ${removed[*]} (their settings stay in $INSTALL_DIR/config)"
   fi
+  [[ $PREV_SMB == yes && $SMB != yes ]] && warn "This will REMOVE the $SMB_SHARE network share (your files stay where they are)"
 
   if (( DRY_RUN )); then
     report_ports
@@ -946,7 +972,9 @@ install_deps() {
   export DEBIAN_FRONTEND=noninteractive
   local APT=(apt-get -y -o DPkg::Lock::Timeout=300)
   local need=()
-  for pkg in curl jq python3 ca-certificates gnupg iproute2; do
+  local pkgs=(curl jq python3 ca-certificates gnupg iproute2)
+  [[ $SMB == yes ]] && pkgs+=(samba)
+  for pkg in "${pkgs[@]}"; do
     dpkg -s "$pkg" >/dev/null 2>&1 || need+=("$pkg")
   done
   if (( ${#need[@]} )); then
@@ -1153,6 +1181,7 @@ STACK_SERVER=$SERVER
 STACK_DOWNLOADER=$DOWNLOADER
 STACK_EXTRAS=$EXTRAS
 STACK_SUB_LANGS=$SUB_LANGS
+STACK_SMB=$SMB
 EOF
   local v
   for v in "${PORT_VARS[@]}"; do echo "$v=${!v}" >>"$INSTALL_DIR/.env"; done
@@ -1719,6 +1748,104 @@ seerr_setup() {
   fi
 }
 
+# ── SMB share ─────────────────────────────────────────────────────────────────
+# One share of the whole media folder. Files copied in are owned by the apps'
+# user (force user), so Radarr & co. can rename and import them. Our settings
+# live in their own files; smb.conf only gets an include + a username map line.
+# Steps check their own result: errexit is off inside `run … || …`.
+smb_owner() { # → "user group" names for PUID/PGID, creating them if missing (e.g. in an LXC)
+  local u g name=media
+  getent passwd media >/dev/null || getent group media >/dev/null && name=shl-media
+  g=$(getent group "$PGID" | cut -d: -f1 || true)
+  if [[ -z $g ]]; then groupadd -g "$PGID" "$name" >&2 || return 1; g=$name; fi
+  u=$(getent passwd "$PUID" | cut -d: -f1 || true)
+  if [[ -z $u ]]; then useradd -u "$PUID" -g "$PGID" -M -d /nonexistent -s /usr/sbin/nologin "$name" >&2 || return 1; u=$name; fi
+  echo "$u $g"
+}
+
+smb_setup() {
+  local conf=/etc/samba/smb.conf owner group holder
+  holder=$(ss -Hltnp 'sport = :445' 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -n1)
+  if [[ -n $holder && $holder != smbd ]]; then
+    echo "Port 445 is already used by \"$holder\" (another SMB server?), so the share was skipped"; return 1
+  fi
+  if grep -qiE "^\s*\[$SMB_SHARE\]" "$conf" 2>/dev/null; then
+    echo "smb.conf already has a [$SMB_SHARE] share that isn't ours, so it was left alone"; return 1
+  fi
+  read -r owner group < <(smb_owner) || true
+  [[ -n $owner && -n $group ]] || { echo "Couldn't find or create a user for uid $PUID / gid $PGID"; return 1; }
+
+  if ! id "$SMB_UNIX" >/dev/null 2>&1; then
+    useradd -r -M -d /nonexistent -s /usr/sbin/nologin -g "$group" "$SMB_UNIX" || { echo "Couldn't create the $SMB_UNIX account"; return 1; }
+  fi
+  # Password on stdin, never in argv.
+  printf '%s\n%s\n' "$APP_PASS" "$APP_PASS" | smbpasswd -s -a "$SMB_UNIX" >/dev/null || { echo "Couldn't set the Samba password"; return 1; }
+  smbpasswd -e "$SMB_UNIX" >/dev/null || return 1
+  echo "$SMB_UNIX = $APP_USER" >"$SMB_MAP"
+
+  cat >"$SMB_INC" <<EOF
+# Managed by sudo homelab · media stack. Re-run the installer to change it.
+[$SMB_SHARE]
+   comment = sudo homelab media
+   path = $DATA_DIR
+   valid users = $SMB_UNIX
+   force user = $owner
+   force group = $group
+   read only = no
+   browseable = yes
+   create mask = 0664
+   directory mask = 0775
+   # Macs: keep Finder metadata in extended attributes instead of ._ files
+   # that would clutter the library (and show up in Komga, Jellyfin…).
+   vfs objects = catia fruit streams_xattr
+   fruit:metadata = stream
+   fruit:delete_empty_adfiles = yes
+   # Ignore the ACLs clients send on create. Every file belongs to the apps' user
+   # (force user), so the apps can always rename/import what you copy in.
+   fruit:nfs_aces = no
+   nt acl support = no
+   force create mode = 0664
+   force directory mode = 0775
+EOF
+  if ! grep -qxF "include = $SMB_INC" "$conf"; then
+    [[ -s $conf && -n $(tail -c1 "$conf") ]] && echo >>"$conf"   # file didn't end with a newline
+    printf '# sudo homelab media share\ninclude = %s\n' "$SMB_INC" >>"$conf"
+  fi
+  # username map is a [global] setting. If one is set already, add our line to that file.
+  local map
+  map=$(sed -n 's/^\s*username map\s*=\s*//p' "$conf" | head -n1)
+  if [[ -z $map ]]; then
+    if grep -qE '^\s*\[global\]' "$conf" 2>/dev/null; then
+      sed -i "0,/^\s*\[global\]/s||[global]\n   username map = $SMB_MAP|" "$conf"
+    else
+      printf '[global]\n   username map = %s\n\n' "$SMB_MAP" | cat - "$conf" 2>/dev/null >"$conf.shl" && mv "$conf.shl" "$conf"
+    fi
+  elif [[ $map != "$SMB_MAP" ]]; then
+    grep -qxF "$SMB_UNIX = $APP_USER" "$map" 2>/dev/null || echo "$SMB_UNIX = $APP_USER" >>"$map"
+  fi
+  testparm -s "$conf" >/dev/null 2>&1 || { echo "Samba rejected the configuration (see: testparm -s)"; return 1; }
+
+  systemctl enable smbd >/dev/null 2>&1 || true
+  systemctl restart smbd || { echo "Samba (smbd) didn't start: see journalctl -u smbd"; return 1; }
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow Samba >/dev/null && echo "Firewall: allowed Samba"
+  fi
+  echo "Share \\\\$HOST_IP\\$SMB_SHARE → $DATA_DIR (login $APP_USER, files owned by $owner)"
+}
+
+smb_remove() { # undo smb_setup; leaves the Samba package and your files alone
+  local conf=/etc/samba/smb.conf map
+  [[ -f $SMB_INC ]] || return 0
+  map=$(sed -n 's/^\s*username map\s*=\s*//p' "$conf" 2>/dev/null | head -n1)
+  [[ -n $map && $map != "$SMB_MAP" && -f $map ]] && sed -i "/^$SMB_UNIX = /d" "$map"
+  sed -i -e "\|^# sudo homelab media share$|d" -e "\|^include = $SMB_INC$|d" -e "\|^\s*username map = $SMB_MAP$|d" "$conf"
+  rm -f "$SMB_INC" "$SMB_MAP"
+  smbpasswd -x "$SMB_UNIX" >/dev/null 2>&1 || true
+  userdel "$SMB_UNIX" 2>/dev/null || true
+  systemctl restart smbd 2>/dev/null || true
+  echo "Removed the $SMB_SHARE share"
+}
+
 wire_stack() {
   step "Connecting the apps"
   run "Securing Radarr login" set_auth "$RADARR_URL" v3 "$RADARR_KEY"
@@ -1742,6 +1869,11 @@ wire_stack() {
   fi
   want tdarr && run "Tdarr → admin login + Movies & TV libraries" tdarr_setup
   run "Seerr → Radarr + Sonarr" seerr_setup
+  if [[ $SMB == yes ]]; then
+    run "Network share \\\\$HOST_IP\\$SMB_SHARE" smb_setup || { warn "The SMB share wasn't set up; the stack itself is fine."; SMB=failed; }
+  elif [[ -f $SMB_INC ]]; then
+    run "Removing the $SMB_SHARE network share" smb_remove
+  fi
   [[ -f $INSTALL_DIR/.seerr_manual ]] && warn "Seerr needs Radarr/Sonarr added by hand (Settings → Services). Keys are in credentials.txt."
   return 0
 }
@@ -1770,6 +1902,9 @@ verify() {
   fi
   if want tdarr; then
     if [[ $(http_code "http://localhost:$P_TDARR/api/v2/status") == 200 ]]; then ok "Tdarr is up (internal node, login required)"; else warn "Tdarr is not responding yet"; fi
+  fi
+  if [[ $SMB == yes ]]; then
+    if ss -Hltn 'sport = :445' 2>/dev/null | grep -q . && pdbedit -L 2>/dev/null | grep -q "^$SMB_UNIX:"; then ok "SMB share \\\\$HOST_IP\\$SMB_SHARE is up (login $APP_USER)"; else warn "The SMB share isn't working (Samba not listening, or its login is missing)"; fi
   fi
   if want audiobookshelf; then
     if [[ $(http_code "http://localhost:$P_ABS/healthcheck") == 200 ]]; then ok "Audiobookshelf is up (folder: $DATA_DIR/Audiobooks)"; else warn "Audiobookshelf is not responding yet"; fi
@@ -1811,6 +1946,11 @@ summary() {
     echo "  Downloads  $DATA_DIR/Active_Downloads → /data/Active_Downloads"
     want lidarr && echo "  Music      $DATA_DIR/Music       → /data/Music"
     want tdarr && echo "  Tdarr cache $DATA_DIR/Transcode_Cache → /temp"
+    if [[ $SMB == yes ]]; then
+      echo
+      echo "Network share (SMB): \\\\$HOST_IP\\$SMB_SHARE → $DATA_DIR   (same login)"
+      echo "  Windows: File Explorer → \\\\$HOST_IP\\$SMB_SHARE    Mac: Finder → Go → Connect to Server → smb://$HOST_IP/$SMB_SHARE"
+    fi
     want audiobookshelf && echo "  Audiobooks $DATA_DIR/Audiobooks  → /audiobooks (Audiobookshelf)"
     want komga && echo "  Books      $DATA_DIR/Books       → /data (Komga): Comics, Ebooks, Manga"
   } >"$f"
@@ -1831,6 +1971,7 @@ summary() {
   want tdarr && printf "$row" "$C_BOLD" "Tdarr" "$C_RESET" "$C_CYAN" "http://$ip:$P_TDARR" "$C_RESET"
   want audiobookshelf && printf "$row" "$C_BOLD" "Audiobooks" "$C_RESET" "$C_CYAN" "http://$ip:$P_ABS" "$C_RESET"
   want komga && printf "$row" "$C_BOLD" "Komga" "$C_RESET" "$C_CYAN" "http://$ip:$P_KOMGA" "$C_RESET"
+  [[ $SMB == yes ]] && printf "$row" "$C_BOLD" "SMB share" "$C_RESET" "$C_CYAN" "\\\\$ip\\$SMB_SHARE  (Mac: smb://$ip/$SMB_SHARE)" "$C_RESET"
 
   printf '\n    %sLogin%s  %s / %s%s\n' "$C_GRAY" "$C_RESET" "$APP_USER" "$APP_PASS" \
     "$( [[ ${GENERATED_PASS:-0} == 1 ]] && printf '  %s(generated, saved below)%s' "$C_GRAY" "$C_RESET")"
@@ -1872,6 +2013,7 @@ uninstall() {
   info "Your media in the data folder is never touched."
   confirm "Continue?" || { info "Cancelled. Nothing was changed."; exit 0; }
   run "Removing containers" dc down --remove-orphans
+  [[ -f $SMB_INC ]] && run "Removing the $SMB_SHARE network share" smb_remove
   if (( PURGE )); then run "Deleting $INSTALL_DIR" rm -rf "$INSTALL_DIR"; fi
   ok "Uninstalled."
 }

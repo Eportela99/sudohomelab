@@ -44,7 +44,7 @@ tn_load_core() {
 tn_load_core
 
 # ── TrueNAS defaults (override the core's) ────────────────────────────────────
-VERSION="0.1.2-truenas (core $VERSION)"
+VERSION="0.1.3-truenas (core $VERSION)"
 SCRIPT_URL="$TN_REPO_RAW/truenas/media-stack.sh"
 LOG_FILE="$LOG_DIR/media-stack-truenas-$(date +%Y%m%d-%H%M%S).log"
 PUID=568; PGID=568          # TrueNAS's built-in "apps" user
@@ -53,6 +53,7 @@ MODE=""                     # custom | catalog
 POOL=""
 NET=mediastack              # shared Docker network for catalog mode
 CUSTOM_APP=mediastack       # TrueNAS app name in custom mode
+SMB_SUPPORTED=0             # TrueNAS shares datasets itself (Shares → SMB)
 
 run_hint() { echo "curl -fsSL $SCRIPT_URL -o /tmp/media-stack.sh && sudo bash /tmp/media-stack.sh${1:+$1}"; }
 

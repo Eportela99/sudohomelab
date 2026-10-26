@@ -6,7 +6,7 @@ Stream, request and automate your whole library: Jellyfin and/or Plex, Seerr, Ra
 | --- | --- | --- |
 | Ubuntu / Debian | [`linux/media-stack.sh`](linux/media-stack.sh) | 🧪 Beta |
 | TrueNAS SCALE 24.10+ | [`truenas/media-stack.sh`](truenas/media-stack.sh) | 🧪 Beta (tested on 25.10) |
-| Proxmox VE 8 / 9 | [`proxmox/media-stack.sh`](proxmox/media-stack.sh) | 🧪 Written, not tested yet |
+| Proxmox VE 8 / 9 | [`proxmox/media-stack.sh`](proxmox/media-stack.sh) | ✅ Tested on Proxmox VE 9.2 (nested test VM); interactive run pending |
 | Windows 11 / Server 2019+ | [`windows/media-stack.ps1`](windows/media-stack.ps1) | 🧪 Written, not tested yet |
 | macOS | not written yet | Planned |
 
@@ -42,6 +42,8 @@ Then it:
 - connects **Prowlarr → Radarr + Sonarr**, so indexers you add sync automatically
 - pre-configures **Seerr** with Radarr and Sonarr
 
+**Network share (optional, Ubuntu/Debian and Proxmox):** answer yes to the SMB question (or pass `--smb`) and the whole media folder is shared as `\\<server-ip>\Media` with the same login. Mac: Finder → Go → Connect to Server → `smb://<server-ip>/Media`. Files you copy in belong to the apps' user, so Radarr, Komga and the rest can rename and import them. It installs Samba and adds its own files (`/etc/samba/sudohomelab-media.conf` plus one `include` and one `username map` line in `smb.conf`), so an existing Samba setup keeps working. `--no-smb` on a re-run (or `--uninstall`) takes the share away again and leaves `smb.conf` as it was. On Proxmox, Samba runs inside the container, so the share is at the container's IP.
+
 What's left for you: add indexers in Prowlarr, create your Jellyfin/Plex account and libraries, and sign in to Seerr. With extras: pick subtitle providers in Bazarr, choose a Flow in Tdarr, and create your admin account plus libraries in Audiobookshelf (`/audiobooks`) and Komga (`/data/Comics`, `/data/Ebooks`, `/data/Manga`).
 
 **Uninstall** (your media is never touched, `--purge` also deletes app configs):
@@ -56,7 +58,7 @@ sudo bash -c "$(curl -fsSL <url>)" _ --uninstall --purge
 curl -fsSL <url> | sudo bash -s -- --server=jellyfin --downloader=qbittorrent --yes
 ```
 
-Options: `--server=jellyfin|plex|both`, `--downloader=qbittorrent|sabnzbd|both`, `--extras=lidarr,bazarr,tdarr,audiobookshelf,komga|none`, `--subtitle-langs=en,es`, `--data-dir=PATH`, `--username=NAME`, `--password=PASS`, `--plex-claim=TOKEN`, `--dry-run`, `--uninstall [--purge]`, `--help`.
+Options: `--server=jellyfin|plex|both`, `--downloader=qbittorrent|sabnzbd|both`, `--extras=lidarr,bazarr,tdarr,audiobookshelf,komga|none`, `--subtitle-langs=en,es`, `--smb|--no-smb`, `--data-dir=PATH`, `--username=NAME`, `--password=PASS`, `--plex-claim=TOKEN`, `--dry-run`, `--uninstall [--purge]`, `--help`.
 
 - **Logs:** `/var/log/sudohomelab/media-stack-*.log`
 - **Credentials:** `/opt/sudohomelab/media-stack/credentials.txt` (root only)
@@ -93,7 +95,7 @@ curl -fsSL <truenas url> -o /tmp/media-stack.sh && sudo bash /tmp/media-stack.sh
 ```
 
 
-## Proxmox VE 8 / 9 (not tested yet)
+## Proxmox VE 8 / 9
 
 Run in the Proxmox host shell (root):
 
@@ -101,7 +103,7 @@ Run in the Proxmox host shell (root):
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Media_Stack/proxmox/media-stack.sh)"
 ```
 
-It creates one unprivileged Debian LXC (`nesting=1,keyctl=1`, starts on boot, tag `sudohomelab-mediastack`) and runs the Ubuntu/Debian installer inside it, with the same apps and wiring. Settings and media live on the host and are bind-mounted in (`/opt/sudohomelab/media-stack` and `/srv/media`), so `--uninstall` deletes the container but keeps your settings, and `--purge` deletes them too. A GPU (`/dev/dri`) is passed through when present (Proxmox 8.2+).
+It creates one unprivileged Debian LXC (`nesting=1,keyctl=1`, starts on boot, tag `sudohomelab-mediastack`) and runs the Ubuntu/Debian installer inside it, with the same apps and wiring. Settings and media live on the host and are bind-mounted in (`/opt/sudohomelab/media-stack` and `/srv/media`), so `--uninstall` deletes the container but keeps your settings, and `--purge` deletes them too. A GPU (`/dev/dri`) is passed through when present (Proxmox 8.2+). The Debian template is downloaded over IPv4 when the host has no IPv6 route (some routers, e.g. AT&T gateways, otherwise hand `pveam` an IPv6-only answer). With `--smb`, the share is served from inside the container.
 
 Extra options: `--ctid`, `--storage`, `--bridge`, `--ip=dhcp|CIDR`, `--gateway`, `--cores`, `--memory`, `--disk`, `--settings-dir`, `--data-dir`.
 

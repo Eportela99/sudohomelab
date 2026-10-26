@@ -40,7 +40,7 @@ px_load_core() {
 px_load_core
 
 # ── Proxmox defaults ──────────────────────────────────────────────────────────
-VERSION="0.1.0-proxmox (core $VERSION)"
+VERSION="0.1.1-proxmox (core $VERSION)"
 SCRIPT_URL="$PX_REPO_RAW/proxmox/media-stack.sh"
 LOG_FILE="$LOG_DIR/media-stack-proxmox-$(date +%Y%m%d-%H%M%S).log"
 TOTAL_STEPS=7
@@ -268,14 +268,55 @@ install_deps() {
 
   TEMPLATE_STORE=$(pvesm status -content vztmpl 2>/dev/null | awk 'NR > 1 && $3 == "active" {print $1; exit}')
   [[ -n $TEMPLATE_STORE ]] || die "No storage allows container templates (content 'vztmpl'). Enable it on 'local' in Datacenter → Storage."
-  run "Refreshing the template list" pveam update
+  run "Refreshing the template list" px_template_update
   TEMPLATE=$(pveam available --section system | awk '{print $2}' | grep -E '^debian-1[2-9]-standard_.*amd64' | sort -V | tail -n1)
-  [[ -n $TEMPLATE ]] || die "No Debian template found in 'pveam available'."
-  if pveam list "$TEMPLATE_STORE" | grep -q "$TEMPLATE"; then
+  [[ -n $TEMPLATE ]] || die "No Debian template found in 'pveam available'. Check this host's internet access and DNS, then re-run."
+  if px_have_template; then
     ok "Template $TEMPLATE already downloaded"
   else
-    run "Downloading $TEMPLATE" pveam download "$TEMPLATE_STORE" "$TEMPLATE"
+    run "Downloading $TEMPLATE" px_template_download ||
+      die "Couldn't download $TEMPLATE. Check this host's internet access and DNS (a router that answers with IPv6 only breaks it), or run: pveam download $TEMPLATE_STORE $TEMPLATE"
   fi
+}
+
+# pveam prints "update failed" / "download failed" but can still exit 0, so check
+# the result ourselves.
+px_have_template() { pveam list "$TEMPLATE_STORE" 2>/dev/null | grep -q "$TEMPLATE"; }
+
+# pveam downloads with wget. Some routers (e.g. AT&T gateways) drop the IPv4 answer
+# when A and AAAA are asked together, so wget only gets an IPv6 address it can't
+# reach. Without an IPv6 route, tell wget to use IPv4 only.
+px_pveam() {
+  if [[ -z $(ip -6 route show default 2>/dev/null) ]]; then
+    local rc="$SHL_TMP/wgetrc"
+    [[ -f $rc ]] || { cat /etc/wgetrc 2>/dev/null; echo "inet4_only = on"; } >"$rc"
+    WGETRC=$rc pveam "$@"
+  else
+    pveam "$@"
+  fi
+}
+
+px_template_update() {
+  local i out
+  for i in 1 2 3; do
+    out=$(px_pveam update 2>&1) || true
+    echo "$out"
+    [[ $out != *failed* ]] && return 0
+    echo "Template list refresh failed (attempt $i/3), retrying in 5s"
+    sleep 5
+  done
+  echo "Using the cached template list"
+}
+
+px_template_download() {
+  local i
+  for i in 1 2 3; do
+    px_pveam download "$TEMPLATE_STORE" "$TEMPLATE" || true
+    px_have_template && return 0
+    echo "Download failed (attempt $i/3), retrying in 5s"
+    sleep 5
+  done
+  return 1
 }
 
 # ── Host storage (step 4) ─────────────────────────────────────────────────────
@@ -374,10 +415,13 @@ prepare_folders() {
 # ── Install inside (step 6) ───────────────────────────────────────────────────
 write_compose() { :; }   # done inside the container
 
+SMB_PLAN_HOST="<container IP>"   # the share lives in the container
+
 px_inner_args() {
   local a=(--yes --skip-data-perms "--server=$SERVER" "--downloader=$DOWNLOADER" "--extras=${EXTRAS:-none}"
     "--data-dir=$CT_DATA")
   [[ -n $SUB_LANGS ]] && a+=("--subtitle-langs=$SUB_LANGS")
+  if [[ $SMB == yes ]]; then a+=(--smb); else a+=(--no-smb); fi   # Samba runs in the container
   [[ -n $PLEX_CLAIM ]] && a+=("--plex-claim=$PLEX_CLAIM")
   printf '%s\n' "${a[@]}"
 }
@@ -418,6 +462,7 @@ summary() {
   printf '    %sSettings:%s   %s (host)  →  %s\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR" "$CT_SETTINGS"
   printf '    %sMedia:%s      %s (host)  →  %s\n' "$C_GRAY" "$C_RESET" "$DATA_DIR" "$CT_DATA"
   printf '    %sLogin:%s      %s (password in %s/credentials.txt)\n' "$C_GRAY" "$C_RESET" "$APP_USER" "$INSTALL_DIR"
+  [[ $SMB == yes ]] && printf '    %sShare:%s      \\\\%s\\%s  (Mac: smb://%s/%s, same login)\n' "$C_GRAY" "$C_RESET" "$CT_IP" "$SMB_SHARE" "$CT_IP" "$SMB_SHARE"
   printf '    %sLogs:%s       %s%s\n' "$C_GRAY" "$C_RESET" "$LOG_FILE" "${INNER_LOG:+ and $INNER_LOG}"
   local t=$((SECONDS - START_TIME))
   printf '    %sTime:%s       %dm %02ds\n\n' "$C_GRAY" "$C_RESET" $((t / 60)) $((t % 60))
