@@ -548,7 +548,9 @@ check_ports() {
 # Each app becomes one Uptime Kuma monitor. A found app is a line:
 #   key|name|type|target|port|source|known
 #     key     c:<container>, s:<service>, or dns:<container> (stable across re-runs)
-#     type    http (target = path), port (TCP check), docker (container running), dns
+#     type    http (target = path), port (TCP check), docker (container running),
+#             dns (target = DNS server, empty = this machine), and for other machines
+#             url (target = full URL), tcp (target = host), ping (target = host)
 #     source  which sudo homelab stack it belongs to, "docker" or "this machine"
 # Kuma runs in a container: it reaches apps on this machine through
 # host.docker.internal (the Docker host), so the monitors survive an IP change.
@@ -664,7 +666,7 @@ discover() {
       else port=$(published_host_port "$ports" "$cport"); [[ -z $port ]] && port=$(published_host_port "$ports" ""); fi
       if [[ -n $port ]]; then echo "c:$name|$aname|http|$path|$port|$src|1"
       else echo "c:$name|$aname|docker|$name||$src|1"; fi
-      [[ $aname == Pi-hole ]] && echo "dns:$name|Pi-hole DNS|dns|53|53|$src|1"
+      [[ $aname == Pi-hole ]] && echo "dns:$name|Pi-hole DNS|dns||53|$src|1"
     else
       [[ $image == *casaos* || $name == tailscale* ]] && continue
       port=$(published_host_port "$ports" "")
@@ -700,6 +702,8 @@ discover() {
       grep -qx -- "$k" <<<"$now" || mark_found "$line" "not listening now"
     done < <(grep '^s:' "$INSTALL_DIR/$FOUND_FILE" || true)
   fi
+  # Other machines, found by a wrapper (Proxmox: the other guests and their apps).
+  [[ -f $INSTALL_DIR/.extra-found ]] && grep -v '^[[:space:]]*$' "$INSTALL_DIR/.extra-found"
   return 0
 }
 
@@ -710,7 +714,8 @@ found_label() {
   IFS='|' read -r _ name type target port src known <<<"${FOUND[$k]}"
   local what
   case $type in
-    http) what=":$port" ;; port) what=":$port (TCP)" ;; dns) what=":53 (DNS)" ;; docker) what="(container running)" ;;
+    http) what=":$port" ;; port) what=":$port (TCP)" ;; dns) what="${target:+$target}:53 (DNS)" ;; docker) what="(container running)" ;;
+    url) what=${target#*://}; what=${what%%/*} ;; tcp) what="$target:$port (TCP)" ;; ping) what="$target (ping)" ;;
   esac
   printf '%-22s %-20s %s%s%s' "$name" "$what" "$C_GRAY" "$src$( [[ $known == 0 ]] && echo ", unknown app")" "$C_RESET"
 }
@@ -1424,7 +1429,15 @@ kuma_monitors() {
         docker)
           jq -nc --arg k "$k" --arg n "$name" --arg c "$target" '{key: $k, monitor: {type: "docker", name: ($n + " (container)"), docker_container: $c}}' ;;
         dns)
-          jq -nc --arg k "$k" --arg n "$name" --arg ip "$HOST_IP" '{key: $k, monitor: {type: "dns", name: $n, hostname: "github.com", dns_resolve_server: $ip, port: 53}}' ;;
+          [[ $target =~ ^[0-9.]+\.[0-9]+$ ]] || target=$HOST_IP   # (v0.1.0 saved the port here)
+          jq -nc --arg k "$k" --arg n "$name" --arg ip "$target" '{key: $k, monitor: {type: "dns", name: $n, hostname: "github.com", dns_resolve_server: $ip, port: 53}}' ;;
+        url)   # another machine's web page; self-signed certificates are fine (Proxmox, NAS pages)
+          jq -nc --arg k "$k" --arg n "$name" --arg u "$target" --argjson known "$known" \
+            '{key: $k, monitor: {type: "http", name: $n, url: $u, ignoreTls: true, accepted_statuscodes: (if $known == 1 then ["200-399"] else ["200-499"] end)}}' ;;
+        tcp)
+          jq -nc --arg k "$k" --arg n "$name" --arg h "$target" --argjson p "$port" '{key: $k, monitor: {type: "port", name: $n, hostname: $h, port: $p}}' ;;
+        ping)
+          jq -nc --arg k "$k" --arg n "$name" --arg h "$target" '{key: $k, monitor: {type: "ping", name: $n, hostname: $h}}' ;;
       esac
     done
   } | jq -sc .

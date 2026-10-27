@@ -294,6 +294,12 @@ normalize_hub() { # "192.168.1.50", "192.168.1.50:8090", "http://nas:8090/" → 
   echo "$h"
 }
 
+is_local_hub() { # is $HUB this machine (any of its addresses)?
+  local h=${HUB#*://}; h=${h%%[:/]*}
+  [[ $h == localhost || $h == 127.* || $h == "$(hostname)" ]] && return 0
+  ip -4 -o addr show 2>/dev/null | awk '{split($4, a, "/"); print a[1]}' | grep -qxF -- "$h"
+}
+
 hub_up() { [[ $(curl -s -m 8 "$HUB/api/health" 2>/dev/null) == *'"code":200'* ]]; }
 
 # ── Option B: log in to the hub, fetch the key and token ──────────────────────
@@ -348,9 +354,6 @@ preflight() {
       die "Please install $c first (it's needed to talk to the hub)."
     fi
   done
-  if [[ -f $HUB_STACK_DIR/docker-compose.yml ]]; then
-    die "This machine runs the Monitoring Stack's hub, which already has an agent for it. Nothing to do here."
-  fi
   [[ -z $NAME ]] && NAME=$(hostname)
   [[ $NAME =~ ^[A-Za-z0-9._\ -]{1,64}$ ]] || die "Name may have letters, numbers, spaces and . _ - (got '$NAME')."
   if [[ -z $MODE ]]; then
@@ -397,6 +400,12 @@ connect_hub() {
     (( interactive )) || die "Check the address and that this machine can reach it (firewall, VPN)."
     HUB=""
   done
+
+  # The Monitoring Stack's own hub already has an agent for its machine. (Another
+  # hub is fine: the Proxmox host keeps the settings of a hub that runs in a container.)
+  if [[ -f $HUB_STACK_DIR/docker-compose.yml ]] && is_local_hub; then
+    die "$HUB is this machine's own hub (the Monitoring Stack), which already has an agent for it. Nothing to do here."
+  fi
 
   if [[ -n $KEY && -n $TOKEN ]]; then
     [[ $KEY == ssh-ed25519\ * ]] || die "That key doesn't look right: it starts with ssh-ed25519."
