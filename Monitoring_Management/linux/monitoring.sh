@@ -604,7 +604,7 @@ known_image() {
 
 stack_of() { # compose project → which sudo homelab stack it is
   case $1 in
-    mediastack) echo "media stack" ;;
+    mediastack|ix-mediastack) echo "media stack" ;;
     sudohomelab-pihole|ix-pihole) echo "DNS stack" ;;
     "$PROJECT") echo "this stack" ;;
     "") echo "docker" ;;
@@ -721,7 +721,7 @@ discover() {
   return 0
 }
 
-declare -A FOUND=()     # key → found line
+declare -gA FOUND=()    # key → found line (-g: wrappers source this file inside a function)
 FOUND_KEYS=()
 found_label() {
   local k=$1 name type target port src known
@@ -1195,7 +1195,7 @@ setup_ntfy() {
   # Keep the saved token while ntfy still knows it; otherwise make a new one.
   local tokens
   tokens=$(nx token list "$NTFY_PUBLISHER" 2>&1 || true)
-  if [[ -z $NTFY_TOKEN ]] || ! grep -qF -- "$NTFY_TOKEN" <<<"$tokens"; then
+  if [[ -z $NTFY_TOKEN ]] || [[ $tokens != *"$NTFY_TOKEN"* ]]; then
     tokens=$(nx token add --label="sudo homelab alerts" "$NTFY_PUBLISHER" 2>&1 || true)
     NTFY_TOKEN=$(grep -oE -m1 'tk_[a-z0-9]+' <<<"$tokens" || true)
     [[ -n $NTFY_TOKEN ]] || die "ntfy didn't create a publish token."
@@ -1273,13 +1273,16 @@ bz_set_notify() {
   new=$(jq -c --rawfile u "$(sfile bzn "$(bz_notify_url)")" \
     '.webhooks = ([(.webhooks // [])[] | select(startswith("ntfy://") and contains("@ntfy:80/") | not)] + [$u])
      | .emails = ((.emails // []) | map(select(endswith("@homelab.local") | not)))' <<<"$settings")
-  if [[ -n $id ]]; then bz_api PATCH "/api/collections/user_settings/records/$id" "$(jq -nc --argjson s "$new" '{settings: $s}')" >/dev/null
-  else bz_api POST /api/collections/user_settings/records "$(jq -nc --arg u "$BZ_USER_ID" --argjson s "$new" '{user: $u, settings: $s}')" >/dev/null; fi
+  # The settings hold the ntfy token: into jq on stdin, never as an argument.
+  if [[ -n $id ]]; then bz_api PATCH "/api/collections/user_settings/records/$id" "$(jq -c '{settings: .}' <<<"$new")" >/dev/null
+  else bz_api POST /api/collections/user_settings/records "$(jq -c --arg u "$BZ_USER_ID" '{user: $u, settings: .}' <<<"$new")" >/dev/null; fi
   fresh_notify || { echo "ntfy address saved (test already sent with this token)"; return 0; }
   bz_api POST /api/beszel/test-notification "$(jq -nc --rawfile u "$(sfile bzn2 "$(bz_notify_url)")" '{url: $u}')" | grep -q '"err":false' ||
     { echo "Beszel couldn't send a test to ntfy"; return 1; }
   echo "Beszel sent a test notification to ntfy"
 }
+
+agent_up() { dc up -d --force-recreate beszel-agent; }   # picks up a new .agent.env
 
 write_agent_env() {
   ( umask 077; printf 'KEY=%s\nTOKEN=%s\n' "$BESZEL_KEY" "$BESZEL_TOKEN" >"$INSTALL_DIR/.agent.env" )
@@ -1327,7 +1330,7 @@ setup_beszel() {
   save_secrets; state_set BESZEL_KEY "$BESZEL_KEY"
   if ! cmp -s <(printf 'KEY=%s\nTOKEN=%s\n' "$BESZEL_KEY" "$BESZEL_TOKEN") "$INSTALL_DIR/.agent.env"; then
     write_agent_env
-    run "Starting this machine's agent" dc up -d --force-recreate beszel-agent
+    run "Starting this machine's agent" agent_up
   fi
   AGENT_NAME=$(hostname)
   run "Waiting for this machine ($AGENT_NAME) to show up" bz_wait_system "$AGENT_NAME"
@@ -1461,9 +1464,11 @@ kuma_monitors() {
 kuma_run() { # kuma_run mode [password] → runs the Node script with a job
   local pass=${2:-$APP_PASS} job="$INSTALL_DIR/kuma/.sudohomelab-job.json"
   ( umask 077
+    # Through files, not arguments: the notification holds the ntfy token, and the
+    # monitor list can be long (TrueNAS's sudo logs arguments and kills long ones).
     jq -nc --arg mode "$1" --rawfile u "$(sfile ku "$APP_USER")" --rawfile p "$(sfile kp "$pass")" --arg tag "$KUMA_TAG" \
-      --argjson n "$(kuma_notification)" --argjson m "$( [[ $1 == sync ]] && kuma_monitors || echo '[]')" \
-      '{mode: $mode, user: $u, pass: $p, tag: $tag, notification: $n, monitors: $m}' >"$job" )
+      --slurpfile n "$(sfile kn "$(kuma_notification)")" --slurpfile m "$(sfile km "$( [[ $1 == sync ]] && kuma_monitors || echo '[]')")" \
+      '{mode: $mode, user: $u, pass: $p, tag: $tag, notification: $n[0], monitors: $m[0]}' >"$job" )
   kuma_js | dc exec -T kuma node -
 }
 
