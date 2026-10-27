@@ -85,6 +85,51 @@ const DNS_DOCS = [
   },
 ]
 
+// Shared by the Monitoring Stack's apps: one script installs them together.
+const MON_AVAILABLE = ['linux', 'proxmox', 'truenas']
+const MON_UNINSTALL = {
+  uninstall: 'Removes Uptime Kuma, Beszel (hub and this machine\'s agent), ntfy and the extras (on Proxmox: deletes its container and the host\'s agent; on TrueNAS: removes the app). Keeps your monitors, history, logins and tokens for a reinstall.',
+  purge: 'Removes the apps and deletes all monitors, history, accounts and tokens.',
+  safe: 'Agents on other machines keep running with no hub to report to: remove them with beszel-agent.sh --uninstall.',
+}
+const MON_DOCS = [
+  {
+    title: 'What the script does',
+    text: 'One script installs Uptime Kuma, Beszel and ntfy in Docker and connects them, so alerts reach your phone without setting anything up by hand. Run it again any time for a menu: Install, Add a machine, Re-scan apps, Uninstall.',
+    items: [
+      'Asks for one login (or makes one up) and uses it for all three apps. Beszel logs in with an email address.',
+      'Finds the apps on the machine (containers, our other stacks, Plex, SSH, SMB, CasaOS, Cockpit) and offers each as an Uptime Kuma monitor. Known apps are on by default.',
+      'Uptime Kuma and Beszel alerts go to ntfy, which only accepts messages from logged-in users. Alerts: down, CPU, RAM and disk over 90% for 10 minutes.',
+      'Monitors the script made carry the tag sudohomelab. Re-runs only change those, never the ones you made.',
+      'Extras: Dozzle (live container logs) and Portainer (container management), with the same login.',
+    ],
+  },
+  {
+    title: 'Alerts on your phone',
+    items: [
+      'Install the ntfy app (Android, iOS) and add a server: http://<server-ip>:2586, with your login.',
+      'Subscribe to the topic exactly as the script shows it (default homelab-alerts). A test message waits there.',
+      'Your own scripts can post too: the summary shows a curl line with the publish token.',
+    ],
+  },
+  {
+    title: 'Add another machine to Beszel',
+    text: 'Pick Add a machine in the menu. It prints one command to run on the other computer (Linux), with the hub address, key and token filled in.',
+    items: [
+      'Or run beszel-agent.sh with no options on the other machine: it asks for the hub address and your Beszel login, and gets the key and token itself.',
+      'With Docker there it runs as a container (Docker stats included); without, as a system service that updates itself daily.',
+      'Re-scan apps gives every new machine the default alerts.',
+    ],
+  },
+  {
+    title: 'Proxmox & TrueNAS',
+    items: [
+      'Proxmox: creates one small unprivileged container with a fixed address. Uptime Kuma also pings every container and VM, watches the apps inside running containers and the Proxmox page, and the Beszel agent goes on the host itself.',
+      'TrueNAS: one Custom App with its settings in <pool>/apps/monitoring. Uptime Kuma watches every TrueNAS app and the TrueNAS page; a stopped app keeps its monitor and shows as down.',
+    ],
+  },
+]
+
 export const CATEGORIES = [
   {
     id: 'media',
@@ -492,12 +537,53 @@ export const CATEGORIES = [
     accent: '#a0e85b',
     glyph: '◉',
     apps: [
-      { id: 'portainer', name: 'Portainer', icon: 'portainer', desc: 'GUI for Docker containers, stacks and volumes.', ports: [9443], platforms: ALL, min: { ram: 0.5, cpu: 1 }, tags: ['docker'] },
-      { id: 'uptimekuma', name: 'Uptime Kuma', icon: 'uptime-kuma', desc: 'Beautiful uptime monitoring and status pages.', ports: [3001], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['uptime'] },
-      { id: 'beszel', name: 'Beszel', icon: 'beszel', desc: 'Lightweight server metrics hub + agents with Docker stats.', ports: [8090], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['metrics'] },
-      { id: 'dozzle', name: 'Dozzle', icon: 'dozzle', desc: 'Real-time log viewer for all your containers.', ports: [8080], platforms: ALL, min: { ram: 0.1, cpu: 1 }, tags: ['logs'] },
-      { id: 'ntfy', name: 'ntfy', icon: 'ntfy', desc: 'Push notifications to your phone from any script.', ports: [80], platforms: ALL, min: { ram: 0.1, cpu: 1 }, tags: ['notifications'] },
+      { id: 'uptimekuma', name: 'Uptime Kuma', icon: 'uptime-kuma', desc: 'Uptime monitoring and status pages. Installs with Beszel and ntfy, already watching the apps it finds.', ports: [3001], platforms: SERVER, min: { ram: 0.25, cpu: 1 }, tags: ['uptime'],
+        status: 'beta', available: MON_AVAILABLE, script: 'monitoring', uninstall: MON_UNINSTALL, docs: MON_DOCS, note: 'Installed by the Monitoring Stack script, together with Beszel and ntfy.' },
+      { id: 'beszel', name: 'Beszel', icon: 'beszel', desc: 'Lightweight server metrics hub + agents with Docker stats.', ports: [8090], platforms: SERVER, min: { ram: 0.25, cpu: 1 }, tags: ['metrics'],
+        status: 'beta', available: MON_AVAILABLE, script: 'monitoring', uninstall: MON_UNINSTALL, docs: MON_DOCS, note: 'Installed by the Monitoring Stack script, together with Uptime Kuma and ntfy. Other machines join with beszel-agent.sh (Add a machine in its menu).' },
+      { id: 'ntfy', name: 'ntfy', icon: 'ntfy', desc: 'Push notifications to your phone from any script.', ports: [2586], platforms: SERVER, min: { ram: 0.1, cpu: 1 }, tags: ['notifications'],
+        status: 'beta', available: MON_AVAILABLE, script: 'monitoring', uninstall: MON_UNINSTALL, docs: MON_DOCS, note: 'Installed by the Monitoring Stack script, together with Uptime Kuma and Beszel; their alerts go to it.' },
+      { id: 'dozzle', name: 'Dozzle', icon: 'dozzle', desc: 'Real-time log viewer for all your containers.', ports: [8888], platforms: SERVER, min: { ram: 0.1, cpu: 1 }, tags: ['logs'],
+        status: 'beta', available: MON_AVAILABLE, script: 'monitoring', uninstall: MON_UNINSTALL, docs: MON_DOCS, note: 'An extra in the Monitoring Stack script (same login).' },
+      { id: 'portainer', name: 'Portainer', icon: 'portainer', desc: 'GUI for Docker containers, stacks and volumes.', ports: [9443], platforms: SERVER, min: { ram: 0.5, cpu: 1 }, tags: ['docker'],
+        status: 'beta', available: MON_AVAILABLE, script: 'monitoring', uninstall: MON_UNINSTALL, docs: MON_DOCS, note: 'An extra in the Monitoring Stack script (same login).' },
     ],
+    stack: {
+      id: 'monitoring-stack',
+      name: 'Monitoring Stack',
+      available: MON_AVAILABLE,
+      script: 'monitoring',    // Monitoring_Management/linux/monitoring.sh installs the whole stack
+      flags: false,            // its choices are asked while installing
+      uninstall: MON_UNINSTALL,
+      pitch: 'Uptime Kuma watching every app it finds, Beszel showing CPU, RAM and disks for this machine and any you add, and ntfy putting their alerts on your phone. One login for all of it.',
+      options: [
+        { key: 'uptime', label: 'Uptime checks', type: 'one', choices: ['uptimekuma'], default: 'uptimekuma' },
+        { key: 'extras', label: 'Extras', type: 'many', choices: ['dozzle', 'portainer'], default: [] },
+      ],
+      core: ['beszel', 'ntfy'],
+      guide: {
+        intro: 'Three apps, one job each, already connected. Run the script again for a menu to add machines and re-scan for new apps.',
+        steps: [
+          { title: 'Find', apps: ['uptimekuma'], text: 'The script looks at what runs on the machine (containers, our other stacks, Plex, SSH, SMB) and lets you pick what Uptime Kuma should watch.' },
+          { title: 'Watch', apps: ['uptimekuma'], text: 'Uptime Kuma checks each app every minute: its web page, its port or its DNS answer.' },
+          { title: 'Measure', apps: ['beszel'], text: 'Beszel\'s agent reports CPU, RAM, disks, network, temperatures and each container\'s use. Default alerts: down, and over 90% for 10 minutes.' },
+          { title: 'Alert', apps: ['ntfy'], text: 'Both send their alerts to ntfy, which only takes messages from logged-in users. Subscribe in the ntfy phone app.' },
+          { title: 'Add machines', apps: ['beszel'], text: 'Add a machine prints one command for your other computers. Or run beszel-agent.sh there and log in: it fetches the key and token itself.' },
+          { title: 'Re-scan', apps: ['uptimekuma', 'beszel'], text: 'Installed something new? Re-scan apps adds its monitor and gives new Beszel machines the default alerts.' },
+        ],
+        folders: [
+          ['http://<ip>:3001', 'Uptime Kuma'],
+          ['http://<ip>:8090', 'Beszel'],
+          ['http://<ip>:2586', 'ntfy (topic homelab-alerts)'],
+          ['credentials.txt', 'logins, links and the add-a-machine command (root only)'],
+        ],
+        left: 'Left for you: install the ntfy app on your phone and subscribe to the topic, and add your other machines to Beszel.',
+      },
+      wires: [
+        ['$uptime', 'ntfy', 'alerts'],
+        ['beszel', 'ntfy', 'alerts'],
+      ],
+    },
   },
 ]
 
