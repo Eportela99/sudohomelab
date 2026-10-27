@@ -368,7 +368,11 @@ preflight() {
   local other=""
   if command -v docker >/dev/null 2>&1; then
     other=$(docker ps -a --format '{{.Names}}|{{.Image}}|{{.Label "com.docker.compose.project"}}' 2>/dev/null |
-      awk -F'|' -v p="$PROJECT" '$2 ~ /beszel-agent/ && $3 != p {print "container \"" $1 "\""; exit}')
+      awk -F'|' -v p="$PROJECT" '$2 ~ /beszel-agent/ && $3 != p && $3 != "sudohomelab-monitoring" {print "container \"" $1 "\""; exit}')
+    # The Monitoring Stack's own agent reports to the hub on this machine; this one goes to another hub.
+    if [[ $'\n'$(docker ps --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null)$'\n' == *$'\n'sudohomelab-monitoring$'\n'* ]]; then
+      info "This machine also runs a Monitoring Stack: its own agent keeps reporting there, this one reports to the other hub"
+    fi
   fi
   if [[ -n $other ]]; then
     warn "A Beszel agent already runs here ($other)."

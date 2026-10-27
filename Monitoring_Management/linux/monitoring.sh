@@ -613,11 +613,11 @@ stack_of() { # compose project → which sudo homelab stack it is
 }
 
 # Ports of host-network containers aren't in `docker ps`: our stacks saved them.
-saved_port() { # saved_port container default
+saved_port() { # saved_port app default
   local v=""
   case $1 in
-    plex) v=$(sed -n 's/^P_PLEX=//p' "$STACKS_DIR/media-stack/.env" 2>/dev/null) ;;
-    pihole) v=$(sed -n 's/^P_WEB=//p' "$STACKS_DIR/pihole/.state" 2>/dev/null | tail -n1) ;;
+    Plex) v=$(sed -n 's/^P_PLEX=//p' "$STACKS_DIR/media-stack/.env" 2>/dev/null) ;;
+    Pi-hole) v=$(sed -n 's/^P_WEB=//p' "$STACKS_DIR/pihole/.state" 2>/dev/null | tail -n1) ;;
   esac
   echo "${v:-$2}"
 }
@@ -640,9 +640,23 @@ saved_found() { [[ -f $INSTALL_DIR/$FOUND_FILE ]] && awk -F'|' -v k="$1" '$1 == 
 mark_found() { awk -F'|' -v OFS='|' -v m="$2" '{$6 = $6 " (" m ")"; print}' <<<"$1"; }   # mark_found line note
 save_found() { printf '%s\n' "${FOUND[@]}" | sed -E 's/ \((stopped now|not listening now)\)\|/|/' | sort >"$INSTALL_DIR/$FOUND_FILE"; }
 
+# Remembers what was picked. KUMA_SEEN keeps apps you switched off even while
+# they're gone (they stay off when they come back); an app that was on and
+# vanished is forgotten, so it comes back on.
+save_picks() {
+  local prev_on k seen=()
+  prev_on=$(state_get KUMA_ON)
+  for k in $(state_get KUMA_SEEN | tr ',' ' '); do
+    [[ -z ${FOUND[$k]:-} && ,$prev_on, == *,$k,* ]] || seen+=("$k")
+  done
+  state_set KUMA_ON "$KUMA_ON"
+  save_found
+  state_set KUMA_SEEN "$(printf '%s\n' "${FOUND_KEYS[@]}" "${seen[@]}" | awk 'NF && !seen[$0]++' | paste -sd, -)"
+}
+
 discover() {
   local name image ports project state mode k info aname path cport port src seen_plex=0 line
-  command -v docker >/dev/null 2>&1 || return 0
+  # No Docker yet (fresh machine): no containers, but services and .extra-found still count.
   # "|" separators: tabs are whitespace to `read`, so an empty Ports field (host network) would shift the rest.
   while IFS='|' read -r name image ports project state; do
     our_project "$project" && continue   # our own apps are always monitored (see kuma_monitors)
@@ -662,7 +676,7 @@ discover() {
     if [[ -n $info ]]; then
       IFS='|' read -r aname path cport <<<"$info"
       [[ $aname == Plex ]] && seen_plex=1
-      if [[ $mode == host ]]; then port=$(saved_port "$name" "$cport")
+      if [[ $mode == host ]]; then port=$(saved_port "$aname" "$cport")
       else port=$(published_host_port "$ports" "$cport"); [[ -z $port ]] && port=$(published_host_port "$ports" ""); fi
       if [[ -n $port ]]; then echo "c:$name|$aname|http|$path|$port|$src|1"
       else echo "c:$name|$aname|docker|$name||$src|1"; fi
@@ -674,7 +688,7 @@ discover() {
       elif [[ -n $port ]]; then echo "c:$name|$name|port||$port|$src|0"
       else echo "c:$name|$name|docker|$name||$src|0"; fi
     fi
-  done < <(docker ps -a --format '{{.Names}}|{{.Image}}|{{.Ports}}|{{.Label "com.docker.compose.project"}}|{{.State}}' 2>/dev/null | sort)
+  done < <(if command -v docker >/dev/null 2>&1; then docker ps -a --format '{{.Names}}|{{.Image}}|{{.Ports}}|{{.Label "com.docker.compose.project"}}|{{.State}}' 2>/dev/null | sort; fi)
 
   # Services installed on the machine itself (not in Docker).
   # "port<TAB>program" for everything listening on more than localhost
@@ -979,6 +993,7 @@ cname() {
 # The same apps already running outside this stack (a CasaOS Beszel, your own Portainer…).
 others_running() {
   local name image project
+  command -v docker >/dev/null 2>&1 || return 0
   docker ps -a --format '{{.Names}}|{{.Image}}|{{.Label "com.docker.compose.project"}}' 2>/dev/null |
     while IFS='|' read -r name image project; do
       our_project "$project" && continue
@@ -1469,9 +1484,7 @@ setup_kuma() {
   ok "Logged in to Uptime Kuma as $APP_USER"
   run "Monitors + ntfy notification" kuma_run sync "$KUMA_PASS"
   if fresh_notify; then run "Test notification from Uptime Kuma" kuma_run test "$KUMA_PASS"; fi
-  state_set KUMA_ON "$KUMA_ON"
-  save_found
-  state_set KUMA_SEEN "$(printf '%s\n' "${FOUND_KEYS[@]}" "$(state_get KUMA_SEEN | tr ',' '\n')" | awk 'NF && !seen[$0]++' | paste -sd, -)"
+  save_picks
 }
 
 # ── Extras ────────────────────────────────────────────────────────────────────
@@ -1654,9 +1667,7 @@ sync_monitors() {
   step "Updating Uptime Kuma and Beszel"
   kuma_connect || die "Couldn't log in to Uptime Kuma (http://$HOST_IP:$P_KUMA) as $APP_USER."
   run "Monitors" kuma_run sync "$KUMA_PASS"
-  state_set KUMA_ON "$KUMA_ON"
-  save_found
-  state_set KUMA_SEEN "$(printf '%s\n' "${FOUND_KEYS[@]}" "$(state_get KUMA_SEEN | tr ',' '\n')" | awk 'NF && !seen[$0]++' | paste -sd, -)"
+  save_picks
   if bz_connect; then run "Default alerts for every Beszel machine" bz_alerts
   else warn "Couldn't log in to Beszel: alerts for new machines weren't added."; fi
 }
