@@ -344,7 +344,7 @@ preflight() {
   [[ -r /etc/os-release ]] && pretty=$(. /etc/os-release; echo "${PRETTY_NAME:-Linux}")
   ok "OS: $pretty · $(uname -m)"
   if [[ -f /etc/version && -d /usr/share/truenas ]] || command -v midclt >/dev/null 2>&1; then
-    die "This is TrueNAS: use the TrueNAS version of the Monitoring Stack's agent instead (apps here are managed by TrueNAS)."
+    die "This is TrueNAS: use the TrueNAS version, which installs the agent as a TrueNAS app:  curl -fsSL ${SCRIPT_URL%/linux/*}/truenas/beszel-agent.sh -o /tmp/beszel-agent.sh && sudo bash /tmp/beszel-agent.sh"
   fi
   for c in curl jq; do
     command -v "$c" >/dev/null 2>&1 && continue
@@ -486,9 +486,12 @@ install_service() {
   fi
 }
 
+# Only what the agent logged since this run (re)started it: on a re-run, the
+# last run's "WebSocket connected" would otherwise count.
+AGENT_SINCE=""
 agent_logs() {
-  if [[ $MODE == docker ]]; then dc logs --since 10m beszel-agent 2>&1
-  elif command -v journalctl >/dev/null 2>&1; then journalctl -u beszel-agent --since "-10min" --no-pager 2>&1
+  if [[ $MODE == docker ]]; then dc logs --since "${AGENT_SINCE:-10m}" beszel-agent 2>&1
+  elif command -v journalctl >/dev/null 2>&1; then journalctl -u beszel-agent --since "$( [[ -n $AGENT_SINCE ]] && echo "@$AGENT_SINCE" || echo -10min)" --no-pager 2>&1
   else logread 2>/dev/null | grep -i beszel; fi
 }
 
@@ -507,6 +510,7 @@ wait_connected() {
 install_agent() {
   step "Installing the agent"
   if (( DRY_RUN )); then info "Dry run: would install the agent as a $MODE for hub $HUB, name $NAME"; exit 0; fi
+  AGENT_SINCE=$(date +%s)
   if [[ $MODE == docker ]]; then run "Starting the agent container" install_container
   else run "Installing the agent service (Beszel's official installer)" install_service; fi
   run "Waiting for the agent to connect" wait_connected
@@ -540,6 +544,14 @@ wait_up() {
   return 1
 }
 
+manage_hint() {   # (the TrueNAS version replaces this)
+  if [[ $MODE == docker ]]; then
+    printf '    %sManage:%s    cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"
+  else
+    printf '    %sManage:%s    sudo systemctl status beszel-agent · journalctl -u beszel-agent -f %s(updates itself daily)%s\n' "$C_GRAY" "$C_RESET" "$C_GRAY" "$C_RESET"
+  fi
+}
+
 finish() {
   step "Checking with the hub"
   if [[ -n $BZ_AUTH ]]; then
@@ -550,11 +562,7 @@ finish() {
     info "(or re-run the hub's script with --sync to give every new machine the default alerts)."
   fi
   printf '\n  %s%s★ %s reports to %s%s\n\n' "$C_BOLD" "$C_GREEN" "$NAME" "$HUB" "$C_RESET"
-  if [[ $MODE == docker ]]; then
-    printf '    %sManage:%s    cd %s && sudo docker compose ps | logs -f | pull && up -d\n' "$C_GRAY" "$C_RESET" "$INSTALL_DIR"
-  else
-    printf '    %sManage:%s    sudo systemctl status beszel-agent · journalctl -u beszel-agent -f %s(updates itself daily)%s\n' "$C_GRAY" "$C_RESET" "$C_GRAY" "$C_RESET"
-  fi
+  manage_hint
   printf '    %sUninstall:%s %s\n' "$C_GRAY" "$C_RESET" "$(run_hint " --uninstall")"
   printf '    %sLog:%s       %s\n\n' "$C_GRAY" "$C_RESET" "$LOG_FILE"
 }

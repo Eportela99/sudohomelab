@@ -118,6 +118,7 @@ const MON_DOCS = [
     items: [
       'Or run beszel-agent.sh with no options on the other machine: it asks for the hub address and your Beszel login, and gets the key and token itself.',
       'With Docker there it runs as a container (Docker stats included); without, as a system service that updates itself daily.',
+      'A TrueNAS box joins as a TrueNAS app: run truenas/beszel-agent.sh in its shell (the menu shows the line) and log in.',
       'Re-scan apps gives every new machine the default alerts.',
     ],
   },
@@ -540,7 +541,7 @@ export const CATEGORIES = [
       { id: 'uptimekuma', name: 'Uptime Kuma', icon: 'uptime-kuma', desc: 'Uptime monitoring and status pages. Installs with Beszel and ntfy, already watching the apps it finds.', ports: [3001], platforms: SERVER, min: { ram: 0.25, cpu: 1 }, tags: ['uptime'],
         status: 'beta', available: MON_AVAILABLE, script: 'monitoring', uninstall: MON_UNINSTALL, docs: MON_DOCS, note: 'Installed by the Monitoring Stack script, together with Beszel and ntfy.' },
       { id: 'beszel', name: 'Beszel', icon: 'beszel', desc: 'Lightweight server metrics hub + agents with Docker stats.', ports: [8090], platforms: SERVER, min: { ram: 0.25, cpu: 1 }, tags: ['metrics'],
-        status: 'beta', available: MON_AVAILABLE, script: 'monitoring', uninstall: MON_UNINSTALL, docs: MON_DOCS, note: 'Installed by the Monitoring Stack script, together with Uptime Kuma and ntfy. Other machines join with beszel-agent.sh (Add a machine in its menu).' },
+        status: 'beta', available: MON_AVAILABLE, script: 'monitoring', uninstall: MON_UNINSTALL, docs: MON_DOCS, note: 'Installed by the Monitoring Stack script, together with Uptime Kuma and ntfy. Other machines join with beszel-agent.sh (Linux, or as a TrueNAS app; Add a machine in its menu).' },
       { id: 'ntfy', name: 'ntfy', icon: 'ntfy', desc: 'Push notifications to your phone from any script.', ports: [2586], platforms: SERVER, min: { ram: 0.1, cpu: 1 }, tags: ['notifications'],
         status: 'beta', available: MON_AVAILABLE, script: 'monitoring', uninstall: MON_UNINSTALL, docs: MON_DOCS, note: 'Installed by the Monitoring Stack script, together with Uptime Kuma and Beszel; their alerts go to it.' },
       { id: 'dozzle', name: 'Dozzle', icon: 'dozzle', desc: 'Real-time log viewer for all your containers.', ports: [8888], platforms: SERVER, min: { ram: 0.1, cpu: 1 }, tags: ['logs'],

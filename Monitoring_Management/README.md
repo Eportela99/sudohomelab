@@ -5,7 +5,7 @@ Know what's up, what's down and what's eating your RAM.
 | App | What it does | Platform | Status |
 | --- | --- | --- | --- |
 | **Monitoring Stack:** Uptime Kuma + Beszel + ntfy | Uptime checks for every app it finds, CPU/RAM/disk metrics for all your machines, and alerts on your phone | Ubuntu / Debian: [`linux/monitoring.sh`](linux/monitoring.sh)<br>Proxmox VE 8 / 9: [`proxmox/monitoring.sh`](proxmox/monitoring.sh)<br>TrueNAS SCALE 24.10+: [`truenas/monitoring.sh`](truenas/monitoring.sh) | 🧪 Beta |
-| **Beszel agent** (for your other machines) | Adds another Linux computer to the stack's Beszel | Ubuntu / Debian (any Linux with systemd or Docker): [`linux/beszel-agent.sh`](linux/beszel-agent.sh) | 🧪 Beta |
+| **Beszel agent** (for your other machines) | Adds another computer to the stack's Beszel | Ubuntu / Debian (any Linux with systemd or Docker): [`linux/beszel-agent.sh`](linux/beszel-agent.sh)<br>TrueNAS SCALE 24.10+: [`truenas/beszel-agent.sh`](truenas/beszel-agent.sh) | 🧪 Beta |
 | Dozzle, Portainer | Live container logs, container management | Extras in the Monitoring Stack script | 🧪 Beta |
 
 ## Monitoring Stack (Ubuntu / Debian)
@@ -89,6 +89,14 @@ Or run `beszel-agent.sh` with no options there: it asks for the hub address and 
 - A machine that runs its own Monitoring Stack can report to another hub too: the two agents don't get in each other's way.
 - `beszel-agent.sh --uninstall` removes it. The machine stays listed in the hub until you delete it there.
 
+**A TrueNAS SCALE** box joins as a TrueNAS app (the menu shows this line too). In its shell:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Monitoring_Management/truenas/beszel-agent.sh -o /tmp/beszel-agent.sh && sudo bash /tmp/beszel-agent.sh --hub=http://192.168.1.50:8090
+```
+
+It asks for your Beszel login and installs the agent as a Custom App called `beszel-agent`, with its data in `<pool>/apps/beszel-agent`. The key and token are read from files there, so the token doesn't show in the app's settings. TrueNAS's sudo logs every command line, so give the token with `--token-file` rather than `--token=` (or just log in). Docker stats for every TrueNAS app are included; pool space is left to TrueNAS's own alerts. `--uninstall` removes the app, `--uninstall --purge` the dataset too.
+
 ### What it asks while installing
 
 Every question has a default (press Enter), and each one has a flag for unattended installs.
@@ -167,7 +175,7 @@ Same menu, questions and wiring. Nothing is installed on the TrueNAS OS:
 - Passwords and tokens never go on a command line (TrueNAS's sudo logs every one).
 - **Uninstall** removes the app and keeps the dataset, or deletes it too.
 
-Tested on TrueNAS SCALE 25.10 (test VM, with the media stack's 11 catalog apps and the DNS stack running): fresh install, re-run, a stopped app, adding a Linux machine both ways, uninstall keeping data, reinstall, purge; TrueNAS's journal and the app's settings checked for leaked secrets.
+Tested on TrueNAS SCALE 25.10 (test VM, with the media stack's 11 catalog apps and the DNS stack running): fresh install, re-run, a stopped app, adding a Linux machine both ways, uninstall keeping data, reinstall, purge; TrueNAS's journal and the app's settings checked for leaked secrets. The TrueNAS agent was tested on the same VM against a hub on Ubuntu: login and key + token-file, re-run, refusing its own Monitoring Stack's hub, uninstall keeping data, reinstall, purge.
 
 ## Layout
 
@@ -175,6 +183,7 @@ Tested on TrueNAS SCALE 25.10 (test VM, with the media stack's 11 catalog apps a
 Monitoring_Management/
   linux/monitoring.sh      the installer (Ubuntu / Debian), also the core the others load
   linux/beszel-agent.sh    the agent for your other machines
+  truenas/beszel-agent.sh  the agent for a TrueNAS box (TrueNAS app)
   proxmox/monitoring.sh    Proxmox VE: container + host agent + guest checks
   truenas/monitoring.sh    TrueNAS SCALE: Custom App
 ```

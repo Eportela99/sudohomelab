@@ -1583,6 +1583,9 @@ print_agent_cmd() {
   vpn=$(vpn_address)
   [[ -n $vpn ]] && printf '    %sOver %s, use --hub=http://%s:%s instead.%s\n' "$C_GRAY" "${vpn%% *}" "${vpn#* }" "$P_BESZEL" "$C_RESET"
   printf '    %sOr run it without options: it asks for the hub address and your Beszel login.%s\n' "$C_GRAY" "$C_RESET"
+  # TrueNAS's sudo logs command lines, so that one logs in instead of taking the token.
+  printf '    %sTrueNAS (installs a TrueNAS app; asks for your Beszel login):%s\n' "$C_GRAY" "$C_RESET"
+  printf '    %scurl -fsSL %s -o /tmp/beszel-agent.sh && sudo bash /tmp/beszel-agent.sh --hub=%s%s\n' "$C_CYAN" "${AGENT_URL%/linux/*}/truenas/beszel-agent.sh" "http://$HOST_IP:$P_BESZEL" "$C_RESET"
   printf '    %sThe token adds machines without a login: keep it private (Beszel → Settings → Tokens turns it off).%s\n' "$C_GRAY" "$C_RESET"
 }
 
