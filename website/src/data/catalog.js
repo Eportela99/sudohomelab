@@ -131,6 +131,69 @@ const MON_DOCS = [
   },
 ]
 
+// Shared by the Cloud Stack's apps: one script installs them together.
+const CLOUD_AVAILABLE = ['linux', 'proxmox', 'truenas']
+const CLOUD_UNINSTALL = {
+  uninstall: 'Removes Nextcloud and the other apps (on Proxmox: deletes its container; on TrueNAS: removes the app). Keeps settings, databases and your files, so reinstalling brings it all back.',
+  purge: 'Removes the apps and deletes their settings and databases: calendars, contacts, Immich albums, your vault. Your files (Documents, Notes, Photos) stay unless you also add --delete-files.',
+  safe: 'Your files are only deleted with --delete-files, after typing DELETE.',
+}
+const CLOUD_DOCS = [
+  {
+    title: 'What the script does',
+    text: 'One script installs Nextcloud, Collabora, Immich, Vaultwarden, Stirling PDF and Obsidian in Docker and connects them to one folder tree. Run it again any time for a menu: Install, Lock sign-ups, Back up now, Uninstall.',
+    items: [
+      'Asks for one login (or makes one up) for Nextcloud, Immich, Stirling PDF and Obsidian. Immich logs in with an email address.',
+      'Nextcloud comes with Postgres, Redis, a cron container and the Calendar, Tasks, Contacts, Mail, Deck, Collectives, News, Notes and Office apps.',
+      'Office opens Word, Excel and PowerPoint files inside Nextcloud through Collabora.',
+      'Pick the apps you want: Office, Immich (+ optional smart search), Vaultwarden, Stirling PDF, Obsidian. It checks RAM and disk for your choice first (all of them download about 21 GB).',
+      'When it finishes it checks every app: logins, Office connected, the shared folders, the nightly backup.',
+    ],
+  },
+  {
+    title: 'One folder tree for every app',
+    items: [
+      '`/srv/cloud/Documents`: a Nextcloud folder. With Stirling PDF, PDFs dropped in `PDF Inbox/OCR` (searchable text) or `PDF Inbox/Compress` come out in `PDF Done`.',
+      '`/srv/cloud/Notes`: Nextcloud Notes and the Obsidian vault are the same folder.',
+      '`/srv/cloud/Photos`: a Nextcloud folder that Immich also shows as a library.',
+      '`/srv/cloud/backups`: nightly database dumps and Vaultwarden, the last 7 of each.',
+      'App settings and databases live apart, in `/opt/sudohomelab/cloud`. `--data-dir` puts your files on another disk.',
+    ],
+  },
+  {
+    title: 'HTTPS: two ways',
+    items: [
+      'Built-in (default): a small proxy with its own certificate, made only for addresses in your home network and Tailscale. Each app gets an HTTPS port (Nextcloud 443, Immich 2283, Vaultwarden 8222, Stirling PDF 8484, Obsidian 3443).',
+      'Trust the certificate once per device: open http://<server-ip>/ for the file and the steps for iPhone, Android, Windows, macOS and Linux.',
+      'With the Private DNS Stack: names like https://cloud.home, office, photos, vault, pdf and notes. It finds the DNS stack on the same machine (or asks for its address) and adds the names itself.',
+    ],
+  },
+  {
+    title: 'After installing',
+    items: [
+      'Vaultwarden: create your account in the web vault with a master password only you know (the script can\'t do it for you). Then pick Lock sign-ups so nobody else can.',
+      'Phones: the Nextcloud, Immich and Bitwarden apps log in with the address the summary shows.',
+      'Logins and links are saved in `/opt/sudohomelab/cloud/credentials.txt` (root only).',
+    ],
+  },
+  {
+    title: 'Proxmox & TrueNAS',
+    items: [
+      'Proxmox: one unprivileged Debian container (4 cores, 8 GB, 32 GB disk by default) with a fixed address. Your files stay on the host in /srv/cloud (`--data-dir` for your big storage) and settings in /opt/sudohomelab/cloud, so the container can be deleted and rebuilt. With the DNS stack container on the host, the names are added to it.',
+      'TrueNAS: one Custom App ("cloud"), settings in the dataset <pool>/apps/cloud and your files in their own dataset <pool>/cloud (snapshot or share it like any other). The nightly backup is a TrueNAS cron job.',
+    ],
+  },
+  {
+    title: 'Troubleshooting',
+    items: [
+      'Logs: `/var/log/sudohomelab/cloud-*.log`',
+      'Browser warning? Trust the certificate from http://<server-ip>/ on that device, then restart the browser.',
+      'Office doesn\'t open? Open Nextcloud by an address the script knows (`--trusted` adds more), then re-run Install.',
+      'Preview without changing anything: add `--dry-run`. All options: `--help`',
+    ],
+  },
+]
+
 export const CATEGORIES = [
   {
     id: 'media',
@@ -412,25 +475,58 @@ export const CATEGORIES = [
     accent: '#5af78e',
     glyph: '☁',
     apps: [
-      { id: 'nextcloud', name: 'Nextcloud Suite', icon: 'nextcloud', desc: 'Nextcloud with Postgres, Redis, Office, Talk, Calendar & Memories pre-configured.', ports: [443], platforms: ALL, min: { ram: 4, cpu: 2 }, tags: ['files', 'office', 'suite'], suite: true },
-      { id: 'immich', name: 'Immich', icon: 'immich', desc: 'Google Photos replacement with face & object search.', ports: [2283], platforms: ALL, min: { ram: 4, cpu: 2 }, tags: ['photos', 'ml'] },
-      { id: 'vaultwarden', name: 'Vaultwarden', icon: 'vaultwarden', desc: 'Lightweight Bitwarden-compatible password server.', ports: [8000], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['passwords'] },
+      { id: 'nextcloud', name: 'Nextcloud', icon: 'nextcloud', desc: 'Files, calendar, contacts, mail and Office in one place, with Postgres, Redis and cron pre-configured.', ports: [443], platforms: SERVER, min: { ram: 4, cpu: 2 }, tags: ['files', 'office', 'suite'], suite: true,
+        status: 'beta', available: CLOUD_AVAILABLE, script: 'cloud', uninstall: CLOUD_UNINSTALL, docs: CLOUD_DOCS, note: 'Installed by the Cloud Stack script, with Calendar, Tasks, Contacts, Mail, Deck, Collectives, News, Notes and Office (Collabora).' },
+      { id: 'immich', name: 'Immich', icon: 'immich', desc: 'Google Photos replacement: phone backup, albums, and optional face & object search.', ports: [2283], platforms: SERVER, min: { ram: 4, cpu: 2 }, tags: ['photos', 'ml'],
+        status: 'beta', available: CLOUD_AVAILABLE, script: 'cloud', uninstall: CLOUD_UNINSTALL, docs: CLOUD_DOCS, note: 'Part of the Cloud Stack script. It also shows the Photos folder you see in Nextcloud.' },
+      { id: 'vaultwarden', name: 'Vaultwarden', icon: 'vaultwarden', desc: 'Lightweight Bitwarden-compatible password server.', ports: [8222], platforms: SERVER, min: { ram: 0.25, cpu: 1 }, tags: ['passwords'],
+        status: 'beta', available: CLOUD_AVAILABLE, script: 'cloud', uninstall: CLOUD_UNINSTALL, docs: CLOUD_DOCS, note: 'Part of the Cloud Stack script. You make your account yourself, then Lock sign-ups closes them.' },
+      { id: 'stirling', name: 'Stirling PDF', icon: 'stirling-pdf', desc: 'Merge, split, OCR and compress PDFs in the browser.', ports: [8484], platforms: SERVER, min: { ram: 1, cpu: 1 }, tags: ['pdf', 'ocr'],
+        status: 'beta', available: CLOUD_AVAILABLE, script: 'cloud', uninstall: CLOUD_UNINSTALL, docs: CLOUD_DOCS, note: 'Part of the Cloud Stack script, with drop folders in Documents that OCR or compress PDFs on their own.' },
+      { id: 'obsidian', name: 'Obsidian', icon: 'obsidian', desc: 'The real Obsidian app, in your browser.', ports: [3443], platforms: SERVER, min: { ram: 1, cpu: 1 }, tags: ['notes'],
+        status: 'beta', available: CLOUD_AVAILABLE, script: 'cloud', uninstall: CLOUD_UNINSTALL, docs: CLOUD_DOCS, note: 'Part of the Cloud Stack script, opened on the same Notes folder as Nextcloud Notes.' },
       { id: 'syncthing', name: 'Syncthing', icon: 'syncthing', desc: 'Peer-to-peer folder sync between all your devices.', ports: [8384], platforms: ALL, min: { ram: 0.25, cpu: 1 }, tags: ['sync'] },
       { id: 'paperless', name: 'Paperless-ngx', icon: 'paperless-ngx', desc: 'Scan, OCR and search every document you own.', ports: [8000], platforms: ALL, min: { ram: 2, cpu: 2 }, tags: ['documents', 'ocr'] },
     ],
     stack: {
-      id: 'nextcloud-suite',
-      name: 'Nextcloud Suite',
-      pitch: 'Not just Nextcloud. A tuned install with database, cache, cron, office editing and your choice of add-ons enabled.',
+      id: 'cloud-stack',
+      name: 'Cloud Stack',
+      available: CLOUD_AVAILABLE,
+      script: 'cloud',         // Self_Hosted_Cloud/linux/cloud.sh installs the whole stack
+      flags: false,            // its choices are asked while installing
+      uninstall: CLOUD_UNINSTALL,
+      pitch: 'Nextcloud with Office, Calendar, Mail and Notes, plus Immich for photos, Vaultwarden for passwords, Stirling PDF and Obsidian. All of them on one folder tree, behind HTTPS, with nightly backups.',
       options: [
-        { key: 'office', label: 'Office suite', type: 'one', choices: ['collabora', 'onlyoffice'], default: 'collabora' },
-        { key: 'addons', label: 'Add-ons', type: 'many', diagram: false, choices: ['talk', 'calendar', 'contacts', 'memories', 'notes', 'deck'], default: ['calendar', 'contacts', 'memories'] },
+        { key: 'office', label: 'Office', type: 'one', choices: ['collabora'], default: 'collabora' },
+        { key: 'apps', label: 'Apps', type: 'many', choices: ['immich', 'vaultwarden', 'stirling', 'obsidian'], default: ['immich', 'vaultwarden', 'stirling', 'obsidian'] },
       ],
       core: ['nextcloud', 'postgres', 'redis'],
+      guide: {
+        intro: 'Every app works on the same folders, so a file saved in one shows up in the others. The script asks which apps you want and how to reach them, then checks that each one works.',
+        steps: [
+          { title: 'Files', apps: ['nextcloud'], text: 'Nextcloud holds your files, calendars, contacts, tasks and mail, and syncs them to your phone and computer. Documents, Notes and Photos are shared folders.' },
+          { title: 'Edit', apps: ['collabora'], text: 'Open a Word, Excel or PowerPoint file in Nextcloud and it opens in Collabora, right in the browser.' },
+          { title: 'Photos', apps: ['immich'], text: 'The Immich phone app backs up your camera roll. Immich also shows the Photos folder from Nextcloud as a library.' },
+          { title: 'Notes', apps: ['obsidian'], text: 'Obsidian runs in the browser on the Notes folder, the same one Nextcloud Notes uses.' },
+          { title: 'PDFs', apps: ['stirling'], text: 'Drop a scan in Documents/PDF Inbox/OCR (or /Compress) and Stirling PDF puts the searchable (or smaller) copy in PDF Done.' },
+          { title: 'Passwords', apps: ['vaultwarden'], text: 'Vaultwarden works with the Bitwarden apps and browser extensions. You create your account, then Lock sign-ups closes the door.' },
+        ],
+        folders: [
+          ['/srv/cloud/Documents', 'Nextcloud folder (+ PDF Inbox / PDF Done)'],
+          ['/srv/cloud/Notes', 'Nextcloud Notes + Obsidian vault'],
+          ['/srv/cloud/Photos', 'Nextcloud folder + Immich library'],
+          ['/srv/cloud/backups', 'nightly database dumps + Vaultwarden'],
+          ['/opt/sudohomelab/cloud', 'settings, databases, credentials.txt'],
+        ],
+        left: 'Left for you: trust the certificate on each device (or use the DNS stack names), create your Vaultwarden account and lock sign-ups, and install the Nextcloud, Immich and Bitwarden phone apps.',
+      },
       wires: [
         ['nextcloud', 'postgres', 'db'],
         ['nextcloud', 'redis', 'cache'],
         ['nextcloud', '$office', 'WOPI'],
+        ['immich', 'nextcloud', 'Photos'],
+        ['obsidian', 'nextcloud', 'Notes'],
+        ['stirling', 'nextcloud', 'Documents'],
       ],
     },
   },

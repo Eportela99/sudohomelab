@@ -13,12 +13,12 @@ Each project is a folder with one subfolder per platform (`linux/`, `truenas/`, 
 | [Media_Stack](Media_Stack) | Jellyfin/Plex, Seerr, *arr apps, downloaders, pre-wired | 🧪 Beta: Ubuntu, TrueNAS |
 | [Dashboards](Dashboards) | Homarr, Homepage, CasaOS, Glance | Planned |
 | [AdBlock_DNS_Proxy](AdBlock_DNS_Proxy) | Private DNS Stack: Pi-hole + Unbound + Nginx Proxy Manager, app names like `jellyfin.home` | 🧪 Beta: Ubuntu, Proxmox, TrueNAS |
-| [Self_Hosted_Cloud](Self_Hosted_Cloud) | Nextcloud Suite, Immich, Vaultwarden, Syncthing | Planned |
+| [Self_Hosted_Cloud](Self_Hosted_Cloud) | Cloud Stack: Nextcloud + Office, Immich, Vaultwarden, Stirling PDF, Obsidian, on one folder tree | 🧪 Beta: Ubuntu, Proxmox, TrueNAS |
 | [AI_Tools](AI_Tools) | Ollama, Open WebUI, MCP servers, OpenCode, n8n | Planned |
 | [Home_Automation](Home_Automation) | Home Assistant, MQTT, Zigbee2MQTT, Node-RED | Planned |
 | [Books_Audiobooks](Books_Audiobooks) | Audiobookshelf, Komga, Kavita, Calibre-Web | Planned |
 | [VPN_Remote_Access](VPN_Remote_Access) | Tailscale, Headscale, WireGuard, Cloudflare Tunnel | Planned |
-| [Monitoring_Management](Monitoring_Management) | Portainer, Uptime Kuma, Beszel, Dozzle, ntfy | Planned |
+| [Monitoring_Management](Monitoring_Management) | Monitoring Stack: Uptime Kuma + Beszel + ntfy, plus Dozzle, Portainer | 🧪 Beta: Ubuntu, Proxmox, TrueNAS |
 | [website](website) | The sudo homelab site (Vite + React) | Live preview |
 
 ### Quick start: Media Stack on Ubuntu
@@ -38,6 +38,16 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohome
 ```
 
 More: [AdBlock_DNS_Proxy/README.md](AdBlock_DNS_Proxy/README.md).
+
+### Quick start: Cloud Stack on Ubuntu
+
+Nextcloud with Office, Calendar, Mail and Notes, plus Immich, Vaultwarden, Stirling PDF and Obsidian, all on one folder tree behind HTTPS. Run it again for a menu to lock Vaultwarden sign-ups, back up or uninstall.
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Eportela99/sudohomelab/main/Self_Hosted_Cloud/linux/cloud.sh)"
+```
+
+More, including Proxmox and TrueNAS: [Self_Hosted_Cloud/README.md](Self_Hosted_Cloud/README.md).
 
 ## Website
 
