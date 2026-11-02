@@ -131,6 +131,51 @@ const MON_DOCS = [
   },
 ]
 
+// MCP Server (SudoHomelab Script 1): AI_Tools/<platform>/mcp-server.sh
+const MCP_AVAILABLE = ['linux', 'proxmox']
+const MCP_UNINSTALL = {
+  uninstall: 'Removes the MCP server and the model router (on Proxmox: deletes its container). Keeps your memory, knowledge base, vault, files and tokens in /opt/sudohomelab/mcp, so a reinstall brings them back.',
+  purge: 'Removes the MCP server and deletes everything it stored: memory, knowledge base, vault, files, tokens and the list of models you added.',
+  safe: 'Your model servers (Ollama, llama.cpp, LM Studio…) are never touched: they are only removed from the router.',
+}
+const MCP_DOCS = [
+  {
+    title: 'What the script does',
+    text: 'One script installs an MCP server (one address and one token for every tool) and an OpenAI-compatible model router. No chat model is installed: you connect the ones you already run. Run it again any time for a menu: Install, List models, Add model, Remove model, Set default model, Status, Connection info, Rotate tokens, Update, Uninstall.',
+    items: [
+      'Tools: web search and page reading (private SearXNG), long-term memory and a knowledge base (Postgres + pgvector, bge-m3 embeddings and reranker on CPU), files limited to one folder, and an encrypted vault.',
+      'Pick a profile: Minimal (search + memory) or Standard (+ files, vault), or choose the tools one by one.',
+      'At the end it prints the MCP address and token, the router address, and a join code for AI machines.',
+      'Every request needs the token. Nothing is opened to the internet: use your LAN or your own tailnet.',
+    ],
+  },
+  {
+    title: 'Add a model you already run',
+    text: 'Pick Add model in the menu and give the address of the model server, like `192.168.1.50:11434`. It finds the engine and its models, runs a short chat and a tool-calling test, then adds them to the router as `model@machine`.',
+    items: [
+      'Works with any OpenAI-compatible server: Ollama (11434), llama.cpp (8080), LM Studio (1234), vLLM (8000). Open WebUI and OpenCode are apps: add the model server behind them.',
+      'The server must listen on the network, not only localhost: Ollama `OLLAMA_HOST=0.0.0.0`, llama.cpp `--host 0.0.0.0`, LM Studio "Serve on Local Network". Its firewall must allow the port.',
+      'For the MCP tools the model must support tool calling (llama.cpp needs `--jinja`). The test tells you.',
+      'Remove model takes it out of the router; nothing changes on that machine.',
+    ],
+  },
+  {
+    title: 'Connect your apps',
+    items: [
+      'OpenCode, Claude Code, Open WebUI and other MCP apps: add the MCP address with the header `Authorization: Bearer <token>`. Connection info in the menu shows ready-to-paste lines.',
+      'Use the router (`http://<ip>:8791/v1`, same token) as an OpenAI-compatible provider to reach every model you added, or ask for `default`.',
+    ],
+  },
+  {
+    title: 'Proxmox & Tailscale',
+    items: [
+      'Proxmox: creates one unprivileged Debian container with Docker inside. Settings stay on the host in /opt/sudohomelab/mcp, so uninstalling can keep them.',
+      'Tailscale: inside the container (HTTPS address via tailscale serve), on the Proxmox host (a subnet route you approve), or none.',
+      'Needs about 4 GB of RAM and 15 GB of disk.',
+    ],
+  },
+]
+
 // Shared by the Cloud Stack's apps: one script installs them together.
 const CLOUD_AVAILABLE = ['linux', 'proxmox', 'truenas']
 const CLOUD_UNINSTALL = {
@@ -541,8 +586,10 @@ export const CATEGORIES = [
     apps: [
       { id: 'ollama', name: 'Ollama', icon: 'ollama', desc: 'Run Llama, Qwen, Mistral and friends locally with one command.', ports: [11434], platforms: ALL, min: { ram: 8, cpu: 4, gpu: true }, tags: ['llm'] },
       { id: 'openwebui', name: 'Open WebUI', icon: 'open-webui', desc: 'ChatGPT-style interface for local and cloud models.', ports: [3000], platforms: ALL, min: { ram: 2, cpu: 2 }, tags: ['llm', 'chat'] },
-      { id: 'mcp-full', name: 'MCP Server: Full Install', icon: null, desc: 'Every MCP tool server we maintain, behind one gateway.', ports: [8811], platforms: ALL, min: { ram: 2, cpu: 2 }, tags: ['mcp', 'original'], original: true },
-      { id: 'mcp-picker', name: 'MCP Tool Selector', icon: null, desc: 'Pick exactly which MCP tools to expose: files, Docker, Proxmox, Home Assistant…', ports: [8811], platforms: ALL, min: { ram: 1, cpu: 1 }, tags: ['mcp', 'original'], original: true },
+      { id: 'mcp-full', name: 'MCP Server: Full Install', icon: null, desc: 'One MCP address for every tool (search, memory, files, vault) plus a model router for the models you already run.', ports: [8790, 8791], platforms: ['proxmox', 'linux', 'truenas'], min: { ram: 4, cpu: 2 }, tags: ['mcp', 'original'], original: true,
+        status: 'beta', available: MCP_AVAILABLE, script: 'mcp-server', uninstall: MCP_UNINSTALL, docs: MCP_DOCS, note: 'Installs the tools only: connect your models with Add model in its menu.' },
+      { id: 'mcp-picker', name: 'MCP Tool Selector', icon: null, desc: 'Pick exactly which MCP tools to expose while installing, and change them later from the menu.', ports: [8790], platforms: ['proxmox', 'linux', 'truenas'], min: { ram: 2, cpu: 2 }, tags: ['mcp', 'original'], original: true,
+        status: 'beta', available: MCP_AVAILABLE, script: 'mcp-server', uninstall: MCP_UNINSTALL, docs: MCP_DOCS, note: 'Built into the MCP Server script: pick Custom when it asks for the tools.' },
       { id: 'opencode', name: 'OpenCode', icon: 'opencode', desc: 'Open-source AI coding agent for your terminal.', ports: [], platforms: ['linux', 'windows', 'macos'], min: { ram: 2, cpu: 2 }, tags: ['coding', 'cli'] },
       { id: 'n8n', name: 'n8n', icon: 'n8n', desc: 'Visual workflow automation with AI agent nodes.', ports: [5678], platforms: ALL, min: { ram: 2, cpu: 2 }, tags: ['automation'] },
     ],

@@ -9,8 +9,8 @@ Run models locally, give them tools through MCP and automate everything else.
 | --- | --- | --- | --- |
 | **Ollama** | Run Llama, Qwen, Mistral and friends locally with one command. | Proxmox, Linux, TrueNAS, Windows, macOS | Planned |
 | **Open WebUI** | ChatGPT-style interface for local and cloud models. | Proxmox, Linux, TrueNAS, Windows, macOS | Planned |
-| **MCP Server: Full Install** | Every MCP tool server we maintain, behind one gateway. | Proxmox, Linux, TrueNAS, Windows, macOS | Original (planned) |
-| **MCP Tool Selector** | Pick exactly which MCP tools to expose: files, Docker, Proxmox, Home Assistant… | Proxmox, Linux, TrueNAS, Windows, macOS | Original (planned) |
+| **MCP Server: Full Install** | One MCP address for every tool (search, memory, files, vault) plus a model router for the models you already run. | Proxmox, Linux, TrueNAS | Original (Beta) |
+| **MCP Tool Selector** | Pick exactly which MCP tools to expose while installing, and change them later from the menu. | Proxmox, Linux, TrueNAS | Original (Beta) |
 | **OpenCode** | Open-source AI coding agent for your terminal. | Linux, Windows, macOS | Planned |
 | **n8n** | Visual workflow automation with AI agent nodes. | Proxmox, Linux, TrueNAS, Windows, macOS | Planned |
 
@@ -33,4 +33,4 @@ AI_Tools/
   macos/        macOS
 ```
 
-Nothing here yet. See [Media_Stack](../Media_Stack) for a finished project.
+Published: [`AI_Tools/linux/mcp-server.sh`](linux/mcp-server.sh), [`AI_Tools/proxmox/mcp-server.sh`](proxmox/mcp-server.sh). Install, uninstall and purge commands: https://sudohomelab.vercel.app/#/c/ai

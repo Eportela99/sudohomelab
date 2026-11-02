@@ -12,7 +12,7 @@ export function AppCard({ app, accent, index = 0 }) {
     <a href={`#/c/${app.category}/${app.id}`} className="app-card reveal" style={{ '--accent': accent, '--d': `${(index % 8) * 50}ms` }} onMouseMove={spotlight}>
       <div className="app-card-top">
         <AppIcon icon={app.icon} name={app.name} size={44} accent={accent} original={app.original} />
-        {app.original ? <span className="badge badge-original">Original</span> : <StatusBadge status={app.status} />}
+        {app.original && <span className="badge badge-original">Original</span>}{(!app.original || app.status) && <StatusBadge status={app.status} />}
       </div>
       <h3>{app.name}</h3>
       <p>{app.desc}</p>
@@ -86,7 +86,7 @@ export function AppDrawer({ appId, onClose }) {
         <div className="drawer-facts">
           <div>
             <small>Status</small>
-            {app.original ? <span className="badge badge-original">Original</span> : <StatusBadge status={app.status} />}
+            {app.original && <span className="badge badge-original">Original</span>}{(!app.original || app.status) && <StatusBadge status={app.status} />}
           </div>
           <div>
             <small>Min RAM</small>

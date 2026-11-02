@@ -11,7 +11,20 @@ import { PLATFORMS, platformById } from '../src/data/platforms.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const MARK = '<!-- AUTOGEN: website/scripts/project-readmes.mjs -->'
-const status = (a) => (a.original ? 'Original (planned)' : { planned: 'Planned', beta: 'Beta', ready: 'Ready', official: 'Official install' }[a.status || 'planned'])
+const STATUS = { planned: 'Planned', beta: 'Beta', ready: 'Ready', official: 'Official install' }
+const status = (a) => (a.original ? (a.status ? `Original (${STATUS[a.status]})` : 'Original (planned)') : STATUS[a.status || 'planned'])
+
+// Published sudo homelab scripts in this folder, or a pointer to a finished project.
+const scriptsLine = (c) => {
+  const live = [...new Set(c.apps.filter((a) => a.available?.length).map((a) => a.script))]
+  if (!live.length) return `${c.apps.some((a) => a.official) ? 'No sudo homelab scripts here yet.' : 'Nothing here yet.'} See [Media_Stack](../Media_Stack) for a finished project.`
+  return live
+    .map((sc) => {
+      const plats = [...new Set(c.apps.filter((a) => a.script === sc).flatMap((a) => a.available))]
+      return `Published: ${plats.map((p) => `[\`${c.folder}/${p}/${sc}.sh\`](${p}/${sc}.sh)`).join(', ')}. Install, uninstall and purge commands: https://sudohomelab.vercel.app/#/c/${c.id}`
+    })
+    .join('\n\n')
+}
 
 for (const c of CATEGORIES) {
   const dir = join(root, c.folder)
@@ -59,7 +72,7 @@ ${c.folder}/
 ${PLATFORMS.map((p) => `  ${p.id}/        ${p.name}`).join('\n')}
 \`\`\`
 
-${official.length ? 'No sudo homelab scripts here yet.' : 'Nothing here yet.'} See [Media_Stack](../Media_Stack) for a finished project.
+${scriptsLine(c)}
 `
   )
   console.log(`write   ${c.folder}/README.md`)
