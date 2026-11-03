@@ -3276,3 +3276,18 @@ kbd {
     justify-content: flex-start;
   }
 }
+
+/* advisor: AI replies */
+.rich {
+  display: grid;
+  gap: 6px;
+}
+.rich p {
+  margin: 0;
+}
+.rich-li {
+  padding-left: 4px;
+}
+.rich a {
+  color: var(--cyan);
+}

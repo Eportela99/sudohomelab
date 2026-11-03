@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { categoryById } from '../data/catalog'
 import { Icon } from '../components/Bits'
-import { parseGpu, suggest } from '../advisor/engine'
+import { parseGpu } from '../advisor/engine'
+import { analyzeLab } from '../advisor/lab'
 
 // Rule-based advisor (v1). The AI-model picks come from advisor/engine.js, the
 // same catalog and math as the AI Node installer. The free-text AI chat
@@ -19,84 +19,10 @@ const STEPS = [
   { key: 'goals', q: 'Last one. What do you want to run? Pick as many as you like.', chips: ['Media', 'Cloud & Photos', 'Smart Home', 'Ad-blocking', 'AI', 'Monitoring'], multi: true },
 ]
 
-const GOAL_CAT = { Media: 'media', 'Cloud & Photos': 'cloud', 'Smart Home': 'home', 'Ad-blocking': 'network', AI: 'ai', Monitoring: 'ops' }
-
 // Next step after `i` that applies to these answers (-1 = done).
 const nextStep = (i, a) => {
   for (let j = i + 1; j < STEPS.length; j++) if (!STEPS[j].when || STEPS[j].when(a)) return j
   return -1
-}
-
-function analyze(a) {
-  const ram = parseInt(a.ram, 10) || 8
-  const cpu = a.cpu.toLowerCase()
-  const tier = /n1\d0|n95|n97|celeron|atom|pi|j4125|j5005/.test(cpu) ? 1 : /xeon|epyc|ryzen 7|ryzen 9|i7|i9|threadripper/.test(cpu) ? 3 : 2
-  const gpu = a.gpu
-  const card = a.gpuModel ? parseGpu(a.gpuModel, gpu.toLowerCase()) : null
-  const ai = suggest({ gpu: card, ramGb: ram })
-  const tb = { '< 500 GB': 0.4, '1–2 TB': 1.5, '4–10 TB': 7, '10 TB+': 16 }[a.storage] ?? 1
-  const hwTranscode = gpu !== 'None'
-
-  const platform =
-    a.machine === 'NAS' || tb >= 10
-      ? { id: 'truenas', name: 'TrueNAS SCALE', why: 'Lots of storage. Let ZFS protect it and run apps alongside.' }
-      : ram >= 16 && a.machine !== 'Raspberry Pi / SBC'
-        ? { id: 'proxmox', name: 'Proxmox VE', why: 'Enough RAM to split services into LXCs and VMs with snapshots & backups.' }
-        : { id: 'linux', name: 'Ubuntu Server', why: 'Lean host. Docker directly on bare metal keeps overhead minimal.' }
-
-  const goals = a.goals.length ? a.goals : ['Media', 'Ad-blocking', 'Monitoring']
-  const recs = goals.map((g) => {
-    const cat = categoryById[GOAL_CAT[g]]
-    let fit = 'great'
-    let why = ''
-    let ramUse = 1
-    switch (cat.id) {
-      case 'media':
-        ramUse = 5
-        if (!hwTranscode && tier < 3) [fit, why] = ['good', 'No hardware transcoding. Direct play is fine, but 4K transcodes will struggle.']
-        else why = hwTranscode ? `${gpu} handles multiple 4K transcodes at once.` : 'Strong CPU can software-transcode a stream or two.'
-        if (tb < 2) [fit, why] = ['tight', 'Storage is the bottleneck. Plan for at least 4 TB for a real library.']
-        break
-      case 'cloud':
-        ramUse = 6
-        if (ram < 8) [fit, why] = ['tight', 'Immich’s ML + Nextcloud want ~6 GB together. Pick one for now.']
-        else why = 'Room for Nextcloud Suite and Immich with face recognition.'
-        break
-      case 'home':
-        ramUse = 3
-        why = platform.id === 'proxmox' ? 'Run Home Assistant OS as a VM for full add-on support.' : 'Home Assistant Container + MQTT run comfortably.'
-        break
-      case 'network':
-        ramUse = 0.5
-        why = 'Pi-hole + Unbound barely use resources. Give it a static IP.'
-        break
-      case 'ai': {
-        const top = ai.picks[0]
-        if (!top) {
-          ;[fit, why, ramUse] = ['no', 'Not enough memory for a local model. Use Open WebUI with a remote API instead.', 0]
-          break
-        }
-        const where = top.where === 'gpu' ? 'on your GPU' : top.where === 'split' ? 'split between GPU and CPU' : 'on the CPU'
-        why = `${top.name} ${where}: ~${top.speed} tokens/s, ${top.ctx / 1024}k context. Models below.`
-        ramUse = top.where === 'gpu' ? 1 : Math.ceil(top.ramUse)
-        fit = top.speed >= 30 ? 'great' : top.speed >= 12 ? 'good' : top.speed >= 4 ? 'tight' : 'no'
-        break
-      }
-      case 'ops':
-        ramUse = 0.5
-        why = 'Beszel + Uptime Kuma are tiny. Always worth running.'
-        break
-    }
-    if (tier === 1 && fit === 'great' && ['media', 'cloud'].includes(cat.id)) fit = 'good'
-    return { cat, fit, why, ramUse }
-  })
-
-  const overhead = platform.id === 'proxmox' ? 2 : platform.id === 'truenas' ? 4 : 1
-  const used = overhead + recs.filter((r) => r.fit !== 'no').reduce((s, r) => s + r.ramUse, 0)
-  const score = Math.round(Math.min(98, 30 + Math.min(ram, 64) * 0.6 + tier * 7 + (hwTranscode ? 8 : 0) + Math.min(tb, 16)))
-  const verdict = score >= 90 ? 'Beast mode' : score >= 72 ? 'Excellent all-rounder' : score >= 55 ? 'Solid starter lab' : 'Lightweight lab'
-
-  return { platform, recs, ram, used, overhead, score, verdict, ai: goals.includes('AI') ? ai : null }
 }
 
 function AiModels({ ai }) {
@@ -187,6 +113,26 @@ function Report({ r }) {
   )
 }
 
+// Light formatting for the AI's replies: line breaks, "- " bullets, **bold**, #/... page links.
+function Rich({ text }) {
+  const inline = (line, k) =>
+    line.split(/(\*\*[^*]+\*\*|#\/[a-z0-9/-]+)/gi).map((part, i) => {
+      if (/^\*\*.+\*\*$/.test(part)) return <strong key={`${k}-${i}`}>{part.slice(2, -2)}</strong>
+      if (/^#\//.test(part)) return <a key={`${k}-${i}`} href={part}>{part.startsWith('#/c/') ? 'open the installers' : part}</a>
+      return part
+    })
+  return (
+    <div className="rich">
+      {text.split('\n').map((line, i) => {
+        const t = line.trim()
+        if (!t) return null
+        if (/^[-*•]\s+/.test(t)) return <p key={i} className="rich-li">• {inline(t.replace(/^[-*•]\s+/, ''), i)}</p>
+        return <p key={i}>{inline(t, i)}</p>
+      })}
+    </div>
+  )
+}
+
 export default function Advisor() {
   const [msgs, setMsgs] = useState([])
   const [step, setStep] = useState(-1)
@@ -196,6 +142,9 @@ export default function Advisor() {
   const [picked, setPicked] = useState([])
   const end = useRef()
   const session = useRef(0)
+  const ai = useRef([]) // AI conversation: [{ role, content }]
+  const [aiMode, setAiMode] = useState(false)
+  const [aiOff, setAiOff] = useState(false) // a limit was hit: quick questions only
 
   // Rejects if the conversation was restarted while this message was "typing".
   const bot = (content, delay = 700) => {
@@ -213,11 +162,18 @@ export default function Advisor() {
 
   const start = () => run(async () => {
     session.current++
+    ai.current = []
+    setAiMode(false)
     setMsgs([])
     setAnswers({ goals: [] })
     setPicked([])
     setStep(-1)
-    await bot('Hey! I’m the sudo homelab advisor. Tell me about your hardware and I’ll tell you what it can run, and how to set it up.', 500)
+    await bot(
+      aiOff
+        ? 'Hey! I’m the sudo homelab advisor. Answer a few quick questions and I’ll tell you what your hardware can run.'
+        : 'Hey! I’m the sudo homelab advisor. Describe your machine in your own words, like “old Dell with an i7-8700, 32 GB and a GTX 1060 6GB, I want Plex and a local AI”, or tap the quick questions below.',
+      500,
+    )
     await bot(STEPS[0].q, 900)
     setStep(0)
   })
@@ -252,19 +208,54 @@ export default function Advisor() {
     } else {
       setStep(-2)
       await bot('Crunching the numbers…', 600)
-      await bot(<Report r={analyze(next)} />, 1400)
+      await bot(<Report r={analyzeLab(next)} />, 1400)
       await bot('Click any recommendation to jump to its installers. Want to try another machine?', 600)
       setStep(99)
     }
   })
 
+  // Free text goes to the AI advisor (Claude, /api/advisor). Its tools run the same
+  // engine as the quick questions; a report it makes is drawn with the same card.
+  const askAI = (v) => run(async () => {
+    const id = session.current
+    setMsgs((m) => [...m, { from: 'user', content: v }])
+    setText('')
+    setAiMode(true)
+    setStep(-1)
+    setTyping(true)
+    const history = [...ai.current, { role: 'user', content: v }]
+    let data
+    try {
+      const r = await fetch('/api/advisor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: history }) })
+      data = await r.json()
+    } catch {
+      data = { fallback: true, message: 'The AI advisor is unavailable right now. The quick questions below give the same answers.' }
+    }
+    if (id !== session.current) return
+    setTyping(false)
+    if (data.fallback || !data.reply) {
+      setMsgs((m) => [...m, { from: 'bot', content: data.message || data.error || 'Something went wrong.', note: true }])
+      if (data.reason !== 'conversation') setAiOff(true)
+      ai.current = []
+      setAiMode(false)
+      setAnswers({ goals: [] })
+      await bot(STEPS[0].q, 600)
+      setStep(0)
+      return
+    }
+    ai.current = [...history, { role: 'assistant', content: data.reply }]
+    setMsgs((m) => [...m, { from: 'bot', content: <Rich text={data.reply} /> }])
+    if (data.report) await bot(<Report r={analyzeLab(data.report)} />, 500)
+  })
+
   const onSubmit = (e) => {
     e.preventDefault()
     const v = text.trim()
-    if (!v || step < 0 || step >= STEPS.length) return
-    if (STEPS[step].free) answer(v)
-    else {
-      setMsgs((m) => [...m, { from: 'user', content: v }, { from: 'bot', content: 'Free-form answers unlock when the AI model is connected. For now, pick one of the options below 👇', note: true }])
+    if (!v || typing) return
+    if (step >= 0 && step < STEPS.length && STEPS[step].free && (aiOff || ai.current.length === 0 && step > 0)) return answer(v)
+    if (!aiOff) return askAI(v)
+    if (step >= 0 && step < STEPS.length) {
+      setMsgs((m) => [...m, { from: 'user', content: v }, { from: 'bot', content: 'The AI advisor is off for now. Pick one of the options below 👇', note: true }])
       setText('')
     }
   }
@@ -282,9 +273,9 @@ export default function Advisor() {
           <h1>
             What can your <span className="grad">hardware</span> run?
           </h1>
-          <p>Answer a few quick questions. You’ll get a host-OS recommendation, the stacks that fit, a RAM budget and the AI models your GPU can run, before you install anything.</p>
+          <p>Describe your machine or answer a few quick questions. You’ll get a host-OS recommendation, the stacks that fit, a RAM budget and the AI models your GPU can run, before you install anything.</p>
           <div className="preview-flag">
-            <span className="pulse-dot amber" /> Rule-based answers from the same model catalog as the AI Node installer. Free-text AI chat is coming soon.
+            <span className="pulse-dot" /> {aiOff ? 'Quick questions: rule-based answers from the same model catalog as the AI Node installer.' : 'Type freely (Claude Haiku 4.5, limited free use per day) or use the quick questions. Both use the same model catalog as the AI Node installer.'}
           </div>
         </div>
 
@@ -345,8 +336,8 @@ export default function Advisor() {
           </div>
           <form className="chat-input" onSubmit={onSubmit}>
             <span className="t-prompt">❯</span>
-            <input value={text} onChange={(e) => setText(e.target.value)} placeholder={s?.ph || 'Describe your hardware…'} disabled={!s} />
-            <button type="submit" className="btn-send" disabled={!text.trim() || !s} aria-label="Send">
+            <input value={text} onChange={(e) => setText(e.target.value)} placeholder={s?.ph && (aiOff || step > 0) ? s.ph : aiOff ? 'Pick an option above' : 'Describe your hardware in your own words…'} disabled={typing || (!s && !aiMode)} />
+            <button type="submit" className="btn-send" disabled={!text.trim() || typing || (!s && !aiMode)} aria-label="Send">
               <Icon.Arrow />
             </button>
           </form>

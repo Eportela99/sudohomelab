@@ -9,9 +9,12 @@
     "preview": "vite preview",
     "readmes": "node scripts/project-readmes.mjs",
     "models": "node scripts/sync-models.mjs",
-    "prebuild": "node scripts/sync-models.mjs"
+    "prebuild": "node scripts/sync-models.mjs",
+    "test:advisor": "node scripts/test-advisor.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.4.0",
+    "@upstash/redis": "^1.41.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

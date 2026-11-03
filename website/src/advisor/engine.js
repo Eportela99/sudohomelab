@@ -3,7 +3,7 @@
 // (/api/advisor tools) and any remake of the website can share it.
 // The model math is a port of AI_Tools/linux/ai-node.sh (the AI Node installer)
 // and reads the same catalog, so the website and the installer agree.
-import catalog from '../data/models.json'
+import catalog from '../data/models.js'
 
 const GiB = 1024 ** 3
 const KV_BYTES = 34 / 32 // q8_0 KV cache: 34 bytes per 32 values
