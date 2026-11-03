@@ -20,7 +20,7 @@ import { GOALS, GPUS, MACHINES, STORAGE, analyzeLab } from '../src/advisor/lab.j
 const MODEL = 'claude-haiku-4-5'
 const LIMITS = {
   dailyBudgetUsd: 1, // whole site, per UTC day
-  conversationsPerVisitor: 3, // per UTC day
+  conversationsPerVisitor: 20, // per UTC day. TESTING PHASE: set back to 3 before the site goes public
   messagesPerConversation: 12, // visitor messages
   maxMessageChars: 1500,
   maxRounds: 5, // model calls per visitor message (tool use)
