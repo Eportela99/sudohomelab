@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "readmes": "node scripts/project-readmes.mjs"
+    "readmes": "node scripts/project-readmes.mjs",
+    "models": "node scripts/sync-models.mjs",
+    "prebuild": "node scripts/sync-models.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

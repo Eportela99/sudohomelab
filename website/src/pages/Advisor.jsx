@@ -1,27 +1,39 @@
 import { useEffect, useRef, useState } from 'react'
 import { categoryById } from '../data/catalog'
 import { Icon } from '../components/Bits'
+import { parseGpu, suggest } from '../advisor/engine'
 
-// PREVIEW: a scripted, rule-based conversation. The questions and the shape
-// of the final report are what the real AI advisor will produce; the
-// `analyze()` function gets replaced by a call to the model.
+// Rule-based advisor (v1). The AI-model picks come from advisor/engine.js, the
+// same catalog and math as the AI Node installer. The free-text AI chat
+// (Claude, /api/advisor) will call those same functions as tools.
 
 const STEPS = [
   { key: 'machine', q: 'What kind of machine are we working with?', chips: ['Mini PC', 'Old desktop / laptop', 'Rack / tower server', 'NAS', 'Raspberry Pi / SBC', 'Gaming PC'] },
-  { key: 'cpu', q: 'Which CPU does it have? Type the model if you know it.', chips: ['Intel N100 / N150', 'Intel i5 / i7 (8th gen+)', 'AMD Ryzen 5 / 7', 'Xeon / EPYC', 'Raspberry Pi 5'], free: true },
+  { key: 'cpu', q: 'Which CPU does it have? Type the model if you know it.', chips: ['Intel N100 / N150', 'Intel i5 / i7 (8th gen+)', 'AMD Ryzen 5 / 7', 'Xeon / EPYC', 'Raspberry Pi 5'], free: true, ph: 'e.g. Intel i5-12500T' },
   { key: 'ram', q: 'How much RAM?', chips: ['4 GB', '8 GB', '16 GB', '32 GB', '64 GB', '128 GB+'] },
   { key: 'storage', q: 'Roughly how much storage?', chips: ['< 500 GB', '1–2 TB', '4–10 TB', '10 TB+'] },
   { key: 'gpu', q: 'Any GPU? Integrated graphics count, they’re great for transcoding.', chips: ['None', 'Intel iGPU (QuickSync)', 'NVIDIA', 'AMD'] },
+  { key: 'gpuModel', q: 'Which card? Type the model with its memory, like “RTX 3060 12GB”, or just pick the VRAM.', chips: ['4 GB', '6 GB', '8 GB', '10 GB', '12 GB', '16 GB', '20 GB', '24 GB', '32 GB', '48 GB'], free: true, ph: 'e.g. RTX 3060 12GB',
+    when: (a) => a.gpu === 'NVIDIA' || a.gpu === 'AMD',
+    check: (v, a) => (parseGpu(v, a.gpu.toLowerCase()).vram ? null : 'I need the memory size too, like “RTX 3060 12GB”, or pick one of the sizes below 👇') },
   { key: 'goals', q: 'Last one. What do you want to run? Pick as many as you like.', chips: ['Media', 'Cloud & Photos', 'Smart Home', 'Ad-blocking', 'AI', 'Monitoring'], multi: true },
 ]
 
 const GOAL_CAT = { Media: 'media', 'Cloud & Photos': 'cloud', 'Smart Home': 'home', 'Ad-blocking': 'network', AI: 'ai', Monitoring: 'ops' }
+
+// Next step after `i` that applies to these answers (-1 = done).
+const nextStep = (i, a) => {
+  for (let j = i + 1; j < STEPS.length; j++) if (!STEPS[j].when || STEPS[j].when(a)) return j
+  return -1
+}
 
 function analyze(a) {
   const ram = parseInt(a.ram, 10) || 8
   const cpu = a.cpu.toLowerCase()
   const tier = /n1\d0|n95|n97|celeron|atom|pi|j4125|j5005/.test(cpu) ? 1 : /xeon|epyc|ryzen 7|ryzen 9|i7|i9|threadripper/.test(cpu) ? 3 : 2
   const gpu = a.gpu
+  const card = a.gpuModel ? parseGpu(a.gpuModel, gpu.toLowerCase()) : null
+  const ai = suggest({ gpu: card, ramGb: ram })
   const tb = { '< 500 GB': 0.4, '1–2 TB': 1.5, '4–10 TB': 7, '10 TB+': 16 }[a.storage] ?? 1
   const hwTranscode = gpu !== 'None'
 
@@ -58,19 +70,24 @@ function analyze(a) {
         ramUse = 0.5
         why = 'Pi-hole + Unbound barely use resources. Give it a static IP.'
         break
-      case 'ai':
-        ramUse = gpu === 'NVIDIA' ? 8 : 12
-        if (gpu === 'NVIDIA' && ram >= 16) why = 'NVIDIA GPU + RAM: 7–14B models run fast with Ollama.'
-        else if (ram >= 32) [fit, why] = ['good', 'CPU-only, but enough RAM for 7–8B models at usable speed.']
-        else if (ram >= 16) [fit, why] = ['tight', 'Small models only (≤ 3–4B). Consider Open WebUI against a cloud API.']
-        else [fit, why] = ['no', 'Not enough RAM for local LLMs. Use Open WebUI with a remote API instead.']
+      case 'ai': {
+        const top = ai.picks[0]
+        if (!top) {
+          ;[fit, why, ramUse] = ['no', 'Not enough memory for a local model. Use Open WebUI with a remote API instead.', 0]
+          break
+        }
+        const where = top.where === 'gpu' ? 'on your GPU' : top.where === 'split' ? 'split between GPU and CPU' : 'on the CPU'
+        why = `${top.name} ${where}: ~${top.speed} tokens/s, ${top.ctx / 1024}k context. Models below.`
+        ramUse = top.where === 'gpu' ? 1 : Math.ceil(top.ramUse)
+        fit = top.speed >= 30 ? 'great' : top.speed >= 12 ? 'good' : top.speed >= 4 ? 'tight' : 'no'
         break
+      }
       case 'ops':
         ramUse = 0.5
         why = 'Beszel + Uptime Kuma are tiny. Always worth running.'
         break
     }
-    if (tier === 1 && fit === 'great' && ['media', 'cloud', 'ai'].includes(cat.id)) fit = 'good'
+    if (tier === 1 && fit === 'great' && ['media', 'cloud'].includes(cat.id)) fit = 'good'
     return { cat, fit, why, ramUse }
   })
 
@@ -79,7 +96,44 @@ function analyze(a) {
   const score = Math.round(Math.min(98, 30 + Math.min(ram, 64) * 0.6 + tier * 7 + (hwTranscode ? 8 : 0) + Math.min(tb, 16)))
   const verdict = score >= 90 ? 'Beast mode' : score >= 72 ? 'Excellent all-rounder' : score >= 55 ? 'Solid starter lab' : 'Lightweight lab'
 
-  return { platform, recs, ram, used, overhead, score, verdict }
+  return { platform, recs, ram, used, overhead, score, verdict, ai: goals.includes('AI') ? ai : null }
+}
+
+function AiModels({ ai }) {
+  if (!ai?.picks.length) return null
+  const b = ai.budget
+  return (
+    <div className="ai-models">
+      <div className="ram-label">
+        <span>AI models for {b.mode === 'gpu' ? `${b.total} GB of VRAM` : `${b.total} GB of RAM (no GPU)`}</span>
+        <span className="mono">{ai.engine.label}</span>
+      </div>
+      {ai.picks.slice(0, 4).map((p, i) => (
+        <div key={p.id} className="ai-pick" style={{ '--d': `${i * 90}ms` }}>
+          <span className="rec-body">
+            <strong>{p.name}</strong>
+            <small>
+              {p.why} · {p.model.moe ? `MoE, ${p.model.active_params_b}B active` : `${p.model.params_b}B`} · {p.model.license}
+            </small>
+          </span>
+          <span className="ai-stats mono">
+            <span>{p.model.file_gb.toFixed(1)} GB</span>
+            <span>
+              {p.where === 'gpu' ? `${p.gpuUse.toFixed(1)} GB VRAM` : p.where === 'split' ? `${p.gpuUse.toFixed(1)} VRAM + ${p.ramUse.toFixed(1)} RAM` : `${p.ramUse.toFixed(1)} GB RAM`}
+            </span>
+            <span>{p.ctx / 1024}k ctx</span>
+            <span className={p.measured ? 'measured' : ''}>
+              ~{p.speed} tok/s{p.measured ? ' ✓' : ''}
+            </span>
+          </span>
+        </div>
+      ))}
+      <small>
+        Download · memory in use · context · speed (✓ measured on that GPU, otherwise an estimate). Same picks as the installer:{' '}
+        <a href="#/c/ai">install with AI Node →</a>
+      </small>
+    </div>
+  )
 }
 
 const FIT = { great: ['Great fit', 'var(--green)'], good: ['Good fit', 'var(--cyan)'], tight: ['Tight', 'var(--amber)'], no: ['Not recommended', 'var(--red)'] }
@@ -128,6 +182,7 @@ function Report({ r }) {
         </div>
         <small>Includes ~{r.overhead} GB for the host OS. Leftover RAM becomes ZFS / page cache, which is free performance.</small>
       </div>
+      <AiModels ai={r.ai} />
     </div>
   )
 }
@@ -180,14 +235,20 @@ export default function Advisor() {
   const answer = (value) => run(async () => {
     const s = STEPS[step]
     setMsgs((m) => [...m, { from: 'user', content: Array.isArray(value) ? value.join(', ') : value }])
-    const next = { ...answers, [s.key]: value }
-    setAnswers(next)
     setText('')
     setPicked([])
-    if (step < STEPS.length - 1) {
+    const problem = s.check?.(value, answers)
+    if (problem) {
+      setMsgs((m) => [...m, { from: 'bot', content: problem, note: true }])
+      return
+    }
+    const next = { ...answers, [s.key]: value }
+    setAnswers(next)
+    const n = nextStep(step, next)
+    if (n >= 0) {
       setStep(-1)
-      await bot(STEPS[step + 1].q)
-      setStep(step + 1)
+      await bot(STEPS[n].q)
+      setStep(n)
     } else {
       setStep(-2)
       await bot('Crunching the numbers…', 600)
@@ -221,9 +282,9 @@ export default function Advisor() {
           <h1>
             What can your <span className="grad">hardware</span> run?
           </h1>
-          <p>Answer six quick questions. You’ll get a host-OS recommendation, the stacks that fit, and a RAM budget before you install anything.</p>
+          <p>Answer a few quick questions. You’ll get a host-OS recommendation, the stacks that fit, a RAM budget and the AI models your GPU can run, before you install anything.</p>
           <div className="preview-flag">
-            <span className="pulse-dot amber" /> Preview: rule-based answers. The AI model is coming soon.
+            <span className="pulse-dot amber" /> Rule-based answers from the same model catalog as the AI Node installer. Free-text AI chat is coming soon.
           </div>
         </div>
 
@@ -284,7 +345,7 @@ export default function Advisor() {
           </div>
           <form className="chat-input" onSubmit={onSubmit}>
             <span className="t-prompt">❯</span>
-            <input value={text} onChange={(e) => setText(e.target.value)} placeholder={s?.free ? 'e.g. Intel i5-12500T' : 'Describe your hardware…'} disabled={!s} />
+            <input value={text} onChange={(e) => setText(e.target.value)} placeholder={s?.ph || 'Describe your hardware…'} disabled={!s} />
             <button type="submit" className="btn-send" disabled={!text.trim() || !s} aria-label="Send">
               <Icon.Arrow />
             </button>

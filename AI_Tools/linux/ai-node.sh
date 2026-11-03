@@ -499,6 +499,8 @@ def candidates(cat, hw, b):
             continue
         seen.add(mid)
         p = plan(cat["models"][mid], hw, b)
+        if why == "bigger, slower" and p["where"] != "gpu":
+            why = "bigger, partly on the CPU"
         if p["where"] != "nofit":
             out.append((mid, why, p))
     return t, out
