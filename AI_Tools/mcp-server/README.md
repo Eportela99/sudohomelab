@@ -3,9 +3,11 @@
 The brain and tools for your local AI: **one MCP address + one token** for every tool,
 and an **OpenAI-compatible model router** for the models you run on your own machines.
 
-No chat model is installed here. Models live on your AI machines (Ollama, llama.cpp,
-LM Studio, vLLM...) and are connected to the router from the menu (**Add model**),
-or by an AI node installer with the join code.
+No chat model is installed here. Models live on your AI machines: an **AI Node**
+(`../linux/ai-node.sh`, Script 2) joins with the join code, or you connect a server you
+already run (Ollama, llama.cpp, LM Studio, vLLM...) from the menu (**Add model**).
+**Open WebUI** is installed with it by default and shows every model in the router,
+with the MCP tools already turned on.
 
 ```
 Proxmox host
@@ -14,7 +16,8 @@ Proxmox host
       ├── gateway    MCP server :8790/mcp   (bearer token)
       ├── router     model router :8791/v1  (same token; empty until you add a model)
       ├── knowledge  Postgres + pgvector, bge-m3 embeddings + reranker on CPU
-      └── search     SearXNG + Valkey (private web search)
+      ├── search     SearXNG + Valkey (private web search)
+      └── webui      Open WebUI :3000 (router models + MCP tools; optional, default on)
 ```
 
 ## Install
@@ -45,13 +48,28 @@ and a join code. Needs about 4 GB RAM and 15 GB disk (Standard profile).
 | files | `fs_*` (only inside `/opt/sudohomelab/mcp/files`) | Standard |
 | vault | `vault_store/list/get/forget` (encrypted) | Standard |
 
-More tool groups (monitoring, docs, code, wake-on-LAN, SSH, artifacts, GitHub) and
-Open WebUI are coming.
+More tool groups (monitoring, docs, code, wake-on-LAN, SSH, artifacts, GitHub) are coming.
+
+## Open WebUI
+
+Installed by default (`--webui=none` to skip). Address and admin login are in
+**Connection info**; change the password in Settings → Account.
+
+- Models: its OpenAI connection is the router, so every `model@machine` that joins shows
+  up by itself and disappears when it leaves.
+- Tools: `router/webui.py` (run inside the router container) makes an admin API key,
+  adds the MCP as tool server `sudohomelab`, and sets the default model settings so
+  **every model has the MCP tools on, with native function calling**.
+- Uploaded documents use the MCP's bge-m3 embeddings.
+- Menu → Open WebUI (or `--webui=install|sync|remove`): add it to an existing install,
+  refresh the link (also done after Rotate tokens and Update), or remove it (chats kept
+  in `data/webui`).
 
 ## Menu (run the script again)
 
 Install / repair · **List models** · **Add model** · **Remove model** · Set default model ·
-Status · Connection info · Rotate tokens · Update · Uninstall (keep data, or remove everything).
+Status · Connection info · **Open WebUI** · Rotate tokens · Update · Uninstall (keep data,
+or remove everything) · Quit. The menu comes back after every action.
 
 Every item also works as an option, e.g. `--add-model --model-url=192.168.1.50:11434`.
 
@@ -81,7 +99,7 @@ model you added as `model@machine`, or `default`.
 ## Files
 
 - `gateway/` MCP server (FastMCP); one module per tool group in `app/tools/`
-- `router/` model router + `admin.py` (probe, test, add, remove models)
+- `router/` model router + `admin.py` (probe, test, add, remove models) + `webui.py` (Open WebUI link)
 - `knowledge/init.sql` knowledge-base schema
 - Installers: `../linux/mcp-server.sh` (core), `../proxmox/mcp-server.sh` (LXC wrapper)
 

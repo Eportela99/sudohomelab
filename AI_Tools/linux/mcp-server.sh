@@ -9,12 +9,15 @@
 #                 (SudoHomelab Script 2) with the join code printed at the end
 #    · knowledge  Postgres + pgvector, with bge-m3 embeddings + reranker on CPU
 #    · search     SearXNG (private web search) + Valkey
+#    · webui      Open WebUI (default on): every model that joins the router shows
+#                 up there by itself, with the MCP tools already turned on
 #  No chat model is installed here: models live on AI nodes and join the router.
 #
 #  Usage (no options = a menu when it's already installed):
 #    sudo bash -c "$(curl -fsSL <url>/AI_Tools/linux/mcp-server.sh)"
 #    sudo bash mcp-server.sh --install --profile=standard --tailscale=none --yes
 #    sudo bash mcp-server.sh --info | --status | --rotate | --update
+#    sudo bash mcp-server.sh --webui=install|sync|remove
 #    sudo bash mcp-server.sh --uninstall [--purge]
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
@@ -32,12 +35,13 @@ PG_IMAGE="pgvector/pgvector:pg17"
 LLAMA_IMAGE="ghcr.io/ggml-org/llama.cpp:server"
 SEARXNG_IMAGE="searxng/searxng:latest"
 VALKEY_IMAGE="valkey/valkey:8-alpine"
+WEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
 EMBED_GGUF="bge-m3-Q8_0.gguf"
 EMBED_GGUF_URL="https://huggingface.co/gpustack/bge-m3-GGUF/resolve/main/$EMBED_GGUF"
 RERANK_GGUF="bge-reranker-v2-m3-Q8_0.gguf"
 RERANK_GGUF_URL="https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF/resolve/main/$RERANK_GGUF"
 
-P_MCP=8790; P_ROUTER=8791
+P_MCP=8790; P_ROUTER=8791; P_WEBUI=3000
 
 # Tool groups. core, search and knowledge are always on; the rest are picked.
 # RULE: every new tool group is added here AND to GROUPS in gateway/app/server.py.
@@ -58,6 +62,7 @@ profile_tools() { # profile → optional tools
 
 ACTION=""; PROFILE=""; TOOLS=""; TAILSCALE=""; TS_AUTHKEY=""; ASSUME_YES=0; PURGE=0
 M_URL=""; M_NAME=""; M_IDS=""; M_KEY=""; M_REF=""   # model menu options
+WEBUI=""                                             # Open WebUI: on | none (install) · sync | remove (later)
 SRC_DIR="${SHL_SRC:-}"
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -135,6 +140,8 @@ Actions (no action = install, or a menu if it's already installed):
   --rotate             New MCP token and join token (old ones stop working)
   --update             Newest code and images; keeps all data
   --uninstall          Remove the containers (data stays unless --purge)
+  --webui=ACTION       Open WebUI later: install | sync (refresh its link to the router
+                       and MCP) | remove (its chats stay in the data folder)
 
 Models (the router; no model is installed here, you connect ones you already run):
   --models             List the models in the router
@@ -149,6 +156,7 @@ Install options:
   --profile=NAME       minimal (core, search, knowledge) | standard | full  (default standard)
   --tools=LIST         Optional tools, comma list: ${TOOL_IDS[*]} | all | none
   --tailscale=MODE     on (this machine joins your tailnet, HTTPS via tailscale serve) | none
+  --webui=on|none      Install Open WebUI with it (default on)
   --ts-authkey-file=F  File holding a Tailscale auth key (else a login link is shown)
   --src=DIR            Use a local copy of AI_Tools/mcp-server instead of downloading
   --install-dir=PATH   Default $INSTALL_DIR
@@ -161,6 +169,10 @@ parse_args() {
   for a in "$@"; do
     case $a in
       --install|--status|--info|--rotate|--update|--uninstall) ACTION=${a#--} ;;
+      --webui) ACTION=webui ;;
+      --webui=on|--webui=none) WEBUI=${a#*=} ;;
+      --webui=install|--webui=sync|--webui=remove) ACTION=webui; WEBUI=${a#*=} ;;
+      --webui=*) echo "--webui: on, none, install, sync or remove" >&2; exit 2 ;;
       --models|--add-model|--remove-model|--default-model) ACTION=${a#--} ;;
       --model-url=*) M_URL=${a#*=} ;;
       --model-name=*) M_NAME=${a#*=} ;;
@@ -273,6 +285,10 @@ choose_options() {
   if [[ $TAILSCALE == on && -z $TS_AUTHKEY && $ASSUME_YES == 0 ]] && has_tty; then
     TS_AUTHKEY=$(ask_secret "Tailscale auth key (Enter = show a login link instead)")
   fi
+  if [[ -z $WEBUI ]]; then
+    WEBUI=$(env_get WEBUI)
+    [[ -n $WEBUI ]] || { confirm "Install Open WebUI too? (chat in the browser; every model that joins shows up there)" && WEBUI=on || WEBUI=none; }
+  fi
 }
 
 print_plan() {
@@ -280,6 +296,7 @@ print_plan() {
   say "  ${C_BOLD}Plan${C_RESET}"
   say "    tools      ${TOOLS//,/, }"
   say "    tailscale  $TAILSCALE"
+  say "    open webui $([[ $WEBUI == on ]] && echo "yes, port $P_WEBUI (about 4 GB image)" || echo no)"
   say "    folder     $INSTALL_DIR  (settings, tokens, database, files)"
   say "    downloads  ~1.3 GB embedding models + ~2 GB of container images"
   say ""
@@ -342,6 +359,12 @@ write_secrets() {
   [[ -n $(env_get DB_PASSWORD) ]] || env_set DB_PASSWORD "$(gen_token 32)"
   [[ -n $(env_get VAULT_KEY) ]]   || env_set VAULT_KEY "$(fernet_key)"
   [[ -n $(env_get SEARXNG_SECRET) ]] || env_set SEARXNG_SECRET "$(gen_token 48)"
+  if [[ $WEBUI == on ]]; then
+    [[ -n $(env_get WEBUI_SECRET_KEY) ]] || env_set WEBUI_SECRET_KEY "$(gen_token 48)"
+    [[ -n $(env_get WEBUI_ADMIN_EMAIL) ]] || env_set WEBUI_ADMIN_EMAIL "admin@sudohomelab.local"
+    [[ -n $(env_get WEBUI_ADMIN_PASSWORD) ]] || env_set WEBUI_ADMIN_PASSWORD "$(gen_token 20)"
+  fi
+  env_set WEBUI "${WEBUI:-none}"
   env_set TOOLS "$TOOLS"
   env_set TAILSCALE "$TAILSCALE"
   env_set SHL_VERSION "$VERSION"
@@ -432,6 +455,34 @@ services:
     restart: unless-stopped
     command: ["valkey-server", "--save", "", "--appendonly", "no"]
 EOF
+  if [[ $WEBUI == on ]]; then
+    mkdir -p "$INSTALL_DIR/data/webui"
+    cat >>"$INSTALL_DIR/docker-compose.yml" <<EOF
+  webui:
+    image: $WEBUI_IMAGE
+    restart: unless-stopped
+    environment:
+      WEBUI_NAME: sudo homelab
+      WEBUI_SECRET_KEY: \${WEBUI_SECRET_KEY}
+      WEBUI_ADMIN_EMAIL: \${WEBUI_ADMIN_EMAIL}
+      WEBUI_ADMIN_PASSWORD: \${WEBUI_ADMIN_PASSWORD}
+      WEBUI_ADMIN_NAME: Admin
+      ENABLE_SIGNUP: "False"
+      ENABLE_API_KEYS: "True"
+      ENABLE_OLLAMA_API: "False"
+      # Models: the router (every model@node that joins). Tools: the MCP (linked after start).
+      OPENAI_API_BASE_URLS: http://router:8791/v1
+      OPENAI_API_KEYS: \${MCP_TOKEN}
+      # Uploaded documents use the MCP's bge-m3 embeddings (no extra model download).
+      RAG_EMBEDDING_ENGINE: openai
+      RAG_OPENAI_API_BASE_URL: http://embed:8080/v1
+      RAG_OPENAI_API_KEY: none
+      RAG_EMBEDDING_MODEL: bge-m3
+    volumes: [./data/webui:/app/backend/data]
+    ports: ["$P_WEBUI:8080"]
+    depends_on: [router, gateway, embed]
+EOF
+  fi
   ok "docker-compose.yml written"
 }
 
@@ -445,6 +496,11 @@ start_stack() {
   ok "gateway   http://127.0.0.1:$P_MCP"
   wait_http "http://127.0.0.1:$P_ROUTER/health" 60 || die "The router didn't start (dc logs router)."
   ok "router    http://127.0.0.1:$P_ROUTER (empty until an AI node joins)"
+  if [[ $WEBUI == on ]]; then
+    info "Starting Open WebUI (the first start takes a few minutes)…"
+    wait_http "http://127.0.0.1:$P_WEBUI/health" 600 || die "Open WebUI didn't start (dc logs webui)."
+    ok "webui     http://127.0.0.1:$P_WEBUI"
+  fi
 }
 
 # Talks MCP to the gateway from inside its container: initialize, list tools,
@@ -507,6 +563,7 @@ setup_tailscale() {
   # HTTPS on the tailnet: 443 → MCP gateway, 8443 → model router.
   run tailscale serve --bg --https=443 "http://127.0.0.1:$P_MCP" || warn "tailscale serve (443) failed: enable HTTPS in the Tailscale admin page (DNS → HTTPS certificates)."
   run tailscale serve --bg --https=8443 "http://127.0.0.1:$P_ROUTER" || true
+  [[ $WEBUI == on ]] && { run tailscale serve --bg --https=8444 "http://127.0.0.1:$P_WEBUI" || true; }
   ok "Tailscale: $(ts_name)"
 }
 
@@ -522,6 +579,12 @@ show_info() {
   say "  ${C_BOLD}Model router${C_RESET} (OpenAI-compatible, same token)"
   say "    address   $(router_url)/v1"
   say ""
+  if [[ $(env_get WEBUI) == on ]]; then
+    say "  ${C_BOLD}Open WebUI${C_RESET} (every model in the router, MCP tools on)"
+    say "    address   $(webui_url)"
+    say "    login     $(env_get WEBUI_ADMIN_EMAIL) / $(env_get WEBUI_ADMIN_PASSWORD)   (change it in Settings → Account)"
+    say ""
+  fi
   say "  ${C_BOLD}Join code for AI nodes${C_RESET} (SudoHomelab Script 2)"
   say "    $(join_code)"
   say ""
@@ -555,10 +618,12 @@ do_install() {
   step "Settings";          write_files
   step "Start";             start_stack; wait_backends
   step "Tailscale";         if [[ $TAILSCALE == on ]]; then setup_tailscale; else info "Skipped (LAN only)"; fi
+  [[ $WEBUI == on ]] && TOTAL_STEPS=9
   step "Self-test"
   local out; out=$(self_test 2>&1) || { printf '%s\n' "$out" >>"$LOG_FILE"; die "Self-test failed (see log)."; }
   printf '%s\n' "$out" | sed 's/^/    /'; log "$out"
   ok "MCP answered with the tools above"
+  if [[ $WEBUI == on ]]; then step "Open WebUI"; webui_link; fi
   show_info
 }
 
@@ -578,14 +643,16 @@ do_rotate() {
   run dc up -d --force-recreate gateway router || die "Couldn't restart."
   wait_http "http://127.0.0.1:$P_MCP/health" 60 || warn "gateway slow to restart"
   ok "New tokens. Nodes already joined keep their own node tokens."
+  webui_link
   show_info
 }
 
 do_update() {
   installed || die "Not installed."
   mkdir -p "$LOG_DIR"
-  TOOLS=$(env_get TOOLS); TAILSCALE=$(env_get TAILSCALE)
+  TOOLS=$(env_get TOOLS); TAILSCALE=$(env_get TAILSCALE); WEBUI=$(env_get WEBUI)
   get_source; write_files; start_stack
+  webui_link
   ok "Updated to the newest code; data kept."
 }
 
@@ -600,6 +667,71 @@ do_uninstall() {
   command -v tailscale >/dev/null && [[ $(env_get TAILSCALE) == on ]] && { run tailscale serve reset || true; }
   if [[ $PURGE == 1 ]]; then rm -rf "$INSTALL_DIR"; ok "Removed everything."
   else ok "Containers removed. Data kept in $INSTALL_DIR (--uninstall --purge deletes it)."; fi
+}
+
+# ── Open WebUI ────────────────────────────────────────────────────────────────
+# Models come from the router through the connection set in docker-compose, so
+# every model a node adds or removes appears / disappears by itself. The MCP
+# tool server and "MCP tools on by default for every model" are set with Open
+# WebUI's admin API from inside the router container (router/webui.py).
+webui_url() {
+  local ts; ts=$(ts_name)
+  if [[ $(env_get TAILSCALE) == on && -n $ts ]]; then echo "https://$ts:8444"
+  else echo "http://$(lan_ip):$P_WEBUI"; fi
+}
+webui_py() { # webui_py SECRET args… ; the secret (key or password) travels on stdin
+  local secret=$1; shift
+  printf '%s\n' "$secret" | dc exec -T router python /app/webui.py "$@"
+}
+
+webui_link() { # API key (first time), then router connection + MCP tools + defaults
+  [[ $(env_get WEBUI) == on ]] || return 0
+  local r
+  if [[ -z $(env_get WEBUI_KEY) ]]; then
+    r=$(webui_py "$(env_get WEBUI_ADMIN_PASSWORD)" bootstrap http://webui:8080 "$(env_get WEBUI_ADMIN_EMAIL)" 2>&1) ||
+      { warn "Couldn't get an API key from Open WebUI: ${r##*$'\n'} (try --webui=sync later)"; return 0; }
+    env_set WEBUI_KEY "$(jget 'd["api_key"]' <<<"$r")"
+  fi
+  r=$(webui_py "$(env_get WEBUI_KEY)" sync http://webui:8080 http://router:8791/v1 http://gateway:8790/mcp 2>&1) ||
+    { warn "Open WebUI link failed: ${r##*$'\n'}"; return 0; }
+  ok "Open WebUI: models from the router + MCP tools on by default ($(jget 'd["models_visible"]' <<<"$r") models now)"
+}
+
+do_webui() {
+  installed || die "Not installed."
+  local cur; cur=$(env_get WEBUI)
+  if [[ -z $WEBUI ]]; then
+    if [[ $cur == on ]]; then
+      case $(menu "Open WebUI is installed ($(webui_url))" 1 "Refresh its link (router models + MCP tools)" \
+             "Remove it (chats and users stay in $INSTALL_DIR/data/webui)" "Back") in
+        1) WEBUI=sync ;; 2) WEBUI=remove ;; *) return 0 ;;
+      esac
+    else
+      case $(menu "Open WebUI is not installed" 1 "Install it" "Back") in 1) WEBUI=install ;; *) return 0 ;; esac
+    fi
+  fi
+  case $WEBUI in
+    install)
+      [[ $cur != on ]] || { ok "Open WebUI is already installed."; webui_link; return 0; }
+      WEBUI=on; TOOLS=$(env_get TOOLS); TAILSCALE=$(env_get TAILSCALE)
+      write_secrets; write_files
+      info "Pulling Open WebUI (about 4 GB the first time)…"
+      run dc pull webui || die "Couldn't pull $WEBUI_IMAGE."
+      run dc up -d webui || die "Couldn't start Open WebUI."
+      info "Starting Open WebUI (the first start takes a few minutes)…"
+      wait_http "http://127.0.0.1:$P_WEBUI/health" 600 || die "Open WebUI didn't start (dc logs webui)."
+      [[ $TAILSCALE == on ]] && { run tailscale serve --bg --https=8444 "http://127.0.0.1:$P_WEBUI" || true; }
+      webui_link; show_info ;;
+    sync) [[ $cur == on ]] || die "Open WebUI is not installed."; webui_link ;;
+    remove)
+      [[ $cur == on ]] || { say "  Open WebUI is not installed."; return 0; }
+      confirm "Remove the Open WebUI container? (chats and users stay in $INSTALL_DIR/data/webui)" || return 0
+      run dc rm -sf webui || true
+      WEBUI=none; TOOLS=$(env_get TOOLS); TAILSCALE=$(env_get TAILSCALE)
+      env_set WEBUI none; sed -i '/^WEBUI_KEY=/d' "$INSTALL_DIR/.env"; write_files
+      command -v tailscale >/dev/null && { run tailscale serve --https=8444 off || true; }
+      ok "Open WebUI removed (its data is kept)." ;;
+  esac
 }
 
 # ── Models (router) ───────────────────────────────────────────────────────────
@@ -745,40 +877,48 @@ do_default_model() {
   ok "Default model: $M_REF (apps that ask for \"default\" get this one)"
 }
 
-main() {
-  parse_args "$@"
-  mkdir -p "$LOG_DIR"
-  if [[ -z $ACTION ]]; then
-    if has_tty && [[ $ASSUME_YES == 0 ]]; then
-      banner
-      if ! installed; then
-        case $(menu "MCP server" 1 "Install" "Quit") in 1) ACTION=install ;; *) exit 0 ;; esac
-      else
-        case $(menu "MCP server is installed. What now?" 2 \
-               "Install / repair / change tools (keeps data)" "List models" "Add model (one you already run)" \
-               "Remove model" "Set default model" "Status" "Connection info + join code" \
-               "Rotate tokens" "Update" "Uninstall" "Quit") in
-          1) ACTION=install ;; 2) ACTION=models ;; 3) ACTION=add-model ;; 4) ACTION=remove-model ;;
-          5) ACTION=default-model ;; 6) ACTION=status ;; 7) ACTION=info ;; 8) ACTION=rotate ;;
-          9) ACTION=update ;; 10) ACTION=uninstall ;; *) exit 0 ;;
-        esac
-      fi
-    else
-      ACTION=install
-    fi
-  fi
-  case $ACTION in
+run_action() {
+  case $1 in
     install) do_install ;;
     status) do_status ;;
     info) installed || die "Not installed."; show_info ;;
     rotate) do_rotate ;;
     update) do_update ;;
     uninstall) do_uninstall ;;
+    webui) do_webui ;;
     models) do_models ;;
     add-model) do_add_model ;;
     remove-model) do_remove_model ;;
     default-model) do_default_model ;;
   esac
+}
+
+main() {
+  parse_args "$@"
+  mkdir -p "$LOG_DIR"
+  if [[ -n $ACTION ]]; then run_action "$ACTION"; return; fi
+  if ! has_tty || [[ $ASSUME_YES == 1 ]]; then run_action install; return; fi
+  banner
+  # The menu comes back after each action. Each one runs in a subshell, so an
+  # error returns here instead of closing the script; Quit leaves.
+  while :; do
+    if ! installed; then
+      case $(menu "MCP server" 1 "Install" "Quit") in 1) ACTION=install ;; *) return 0 ;; esac
+    else
+      case $(menu "MCP server is installed. What now?" 2 \
+             "Install / repair / change tools (keeps data)" "List models" "Add model (one you already run)" \
+             "Remove model" "Set default model" "Status" "Connection info + join code" \
+             "Open WebUI (install, refresh, remove)" "Rotate tokens" "Update" "Uninstall" "Quit") in
+        1) ACTION=install ;; 2) ACTION=models ;; 3) ACTION=add-model ;; 4) ACTION=remove-model ;;
+        5) ACTION=default-model ;; 6) ACTION=status ;; 7) ACTION=info ;; 8) ACTION=webui ;;
+        9) ACTION=rotate ;; 10) ACTION=update ;; 11) ACTION=uninstall ;; *) return 0 ;;
+      esac
+    fi
+    ( run_action "$ACTION" ) || true
+    [[ $ACTION == uninstall ]] && ! installed && return 0
+    WEBUI=""; M_URL=""; M_NAME=""; M_IDS=""; M_KEY=""; M_REF=""; PURGE=0
+    read -r -p "  ${C_GRAY}Enter = back to the menu${C_RESET} " _ </dev/tty || true
+  done
 }
 
 [[ ${SHL_LIBRARY:-0} == 1 ]] || main "$@"

@@ -18,7 +18,7 @@
 #
 #  Usage (Proxmox shell; when it's installed, no options = a menu):
 #    bash -c "$(curl -fsSL <url>/AI_Tools/proxmox/mcp-server.sh)"
-#    bash -c "$(curl -fsSL <url>)" _ --info | --status | --rotate | --update
+#    bash -c "$(curl -fsSL <url>)" _ --info | --status | --rotate | --update | --webui=install|sync|remove
 #    bash -c "$(curl -fsSL <url>)" _ --uninstall [--purge]
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
@@ -58,11 +58,13 @@ usage() {
 Usage: bash mcp-server.sh [action] [options]   (Proxmox VE host, as root)
 
 Actions: --install (default) --status --info --rotate --update --uninstall [--purge]
+         --webui=install|sync|remove   (Open WebUI next to the MCP; installed by default)
 Models:  --models  --add-model [--model-url=HOST:PORT --model-name=NAME --model-ids=all]
          --remove-model --model=MODEL@MACHINE   --default-model --model=MODEL@MACHINE
 
 Options:
   --profile=minimal|standard|full   --tools=LIST|all|none   -y, --yes
+  --webui=on|none                   Install Open WebUI with it (default on)
   --tailscale=inside|host|none      inside = the container joins your tailnet (HTTPS)
                                     host   = this Proxmox host routes to the container
   --ts-authkey-file=FILE            Tailscale auth key (else a login link is shown)
@@ -159,6 +161,7 @@ px_plan() {
   say "    container  $CTID \"$CT_HOSTNAME\" on $CT_STORAGE · $CT_CORES CPU · $CT_MEMORY MB · $CT_DISK GB · $CT_IP"
   say "    tools      ${TOOLS//,/, }"
   say "    tailscale  $PX_TS"
+  say "    open webui $([[ $WEBUI == on ]] && echo "yes, port $P_WEBUI" || echo no)"
   say "    settings   /opt/sudohomelab/mcp on this host (mounted into the container)"
   say ""
 }
@@ -236,7 +239,7 @@ px_install() {
   step "Tailscale (host)"; if [[ $PX_TS == host ]]; then px_host_tailscale; else info "Not on the host ($PX_TS)"; fi
   step "MCP server (inside the container; this takes a while)"
   local opt=() optional=${TOOLS#"$ALWAYS_TOOLS"}; optional=${optional#,}
-  opt+=(--install --yes "--tools=${optional:-none}" "--tailscale=$TAILSCALE")
+  opt+=(--install --yes "--tools=${optional:-none}" "--tailscale=$TAILSCALE" "--webui=${WEBUI:-on}")
   [[ -n $LOCAL_SRC ]] && opt+=(--src=/root/mcp-src)
   if [[ $TAILSCALE == on && -n $TS_AUTHKEY ]]; then
     local k; k=$(mktemp); printf '%s\n' "$TS_AUTHKEY" >"$k"
@@ -251,55 +254,66 @@ px_install() {
   ok "Done. Container $CTID ($CT_ADDR). Run this script again for the menu."
 }
 
+px_action() { # px_action ACTION — runs one action against the container
+  push_core
+  case $1 in
+    install) core_in_ct --install "${PASS[@]}" ${LOCAL_SRC:+--src=/root/mcp-src} ;;
+    update) core_in_ct --update ${LOCAL_SRC:+--src=/root/mcp-src} ;;
+    webui) core_in_ct "${PASS[@]:---webui}" ;;
+    uninstall)
+      if [[ $PURGE == 1 ]]; then
+        confirm "Remove container $CTID AND all MCP data (memory, vault, files, tokens)? This can't be undone." || return 0
+      else
+        confirm "Remove container $CTID? Your data stays in /opt/sudohomelab/mcp for a re-install." || return 0
+      fi
+      # Tailscale "inside" leaves with the container; "host" mode keeps this host's route.
+      run pct stop "$CTID" || true
+      run pct destroy "$CTID" --purge 1 || die "pct destroy failed."
+      ok "Container $CTID removed."
+      if [[ $PURGE == 1 ]]; then rm -rf /opt/sudohomelab/mcp; ok "Data removed (/opt/sudohomelab/mcp)."
+      else info "Data kept in /opt/sudohomelab/mcp (re-run the installer to use it again)."; fi
+      if command -v tailscale >/dev/null && tailscale debug prefs 2>/dev/null | grep -q '/32'; then
+        info "If this host advertised a route to the container, remove it: tailscale set --advertise-routes=<the others>"
+      fi ;;
+    *) core_in_ct "--$1" "${PASS[@]}" ;;
+  esac
+}
+
 px_main() {
   px_parse "$@"
   mkdir -p "$LOG_DIR"
   local found; found=$(find_ct)
-  if [[ -n $found ]]; then
-    CTID=$found
-    pct status "$CTID" | grep -q running || run pct start "$CTID"
-    if [[ -z $ACTION ]]; then
-      if has_tty && [[ $ASSUME_YES == 0 ]]; then
-        banner
-        case $(menu "MCP server is installed in container $CTID. What now?" 2 \
-               "Install / repair / change tools (keeps data)" "List models" "Add model (one you already run)" \
-               "Remove model" "Set default model" "Status" "Connection info + join code" \
-               "Rotate tokens" "Update" \
-               "Uninstall: remove the container, KEEP the data in /opt/sudohomelab/mcp" \
-               "Uninstall: remove the container AND all data (memory, vault, files)" "Quit") in
-          1) ACTION=install ;; 2) ACTION=models ;; 3) ACTION=add-model ;; 4) ACTION=remove-model ;;
-          5) ACTION=default-model ;; 6) ACTION=status ;; 7) ACTION=info ;; 8) ACTION=rotate ;;
-          9) ACTION=update ;; 10) ACTION=uninstall ;; 11) ACTION=uninstall; PURGE=1 ;; *) exit 0 ;;
-        esac
-      else
-        ACTION=status
-      fi
-    fi
-    push_core
-    case $ACTION in
-      install) core_in_ct --install "${PASS[@]}" ${LOCAL_SRC:+--src=/root/mcp-src} ;;
-      update) core_in_ct --update ${LOCAL_SRC:+--src=/root/mcp-src} ;;
-      uninstall)
-        if [[ $PURGE == 1 ]]; then
-          confirm "Remove container $CTID AND all MCP data (memory, vault, files, tokens)? This can't be undone." || exit 0
-        else
-          confirm "Remove container $CTID? Your data stays in /opt/sudohomelab/mcp for a re-install." || exit 0
-        fi
-        # Tailscale "inside" leaves with the container; "host" mode keeps this host's route.
-        run pct stop "$CTID" || true
-        run pct destroy "$CTID" --purge 1 || die "pct destroy failed."
-        ok "Container $CTID removed."
-        if [[ $PURGE == 1 ]]; then rm -rf /opt/sudohomelab/mcp; ok "Data removed (/opt/sudohomelab/mcp)."
-        else info "Data kept in /opt/sudohomelab/mcp (re-run the installer to use it again)."; fi
-        if command -v tailscale >/dev/null && tailscale debug prefs 2>/dev/null | grep -q '/32'; then
-          info "If this host advertised a route to the container, remove it: tailscale set --advertise-routes=<the others>"
-        fi ;;
-      *) core_in_ct "--$ACTION" "${PASS[@]}" ;;
-    esac
-    return
+  if [[ -z $found ]]; then
+    [[ -z $ACTION || $ACTION == install ]] || die "The MCP server isn't installed on this host (no container tagged $CT_TAG)."
+    px_install
+    { has_tty && [[ $ASSUME_YES == 0 ]]; } || return 0
+    found=$(find_ct); [[ -n $found ]] || return 0
+    read -r -p "  ${C_GRAY}Enter = open the menu${C_RESET} " _ </dev/tty || true
   fi
-  [[ -z $ACTION || $ACTION == install ]] || die "The MCP server isn't installed on this host (no container tagged $CT_TAG)."
-  px_install
+  CTID=$found
+  pct status "$CTID" | grep -q running || run pct start "$CTID"
+  if [[ -n $ACTION && $ACTION != install ]] || ! has_tty || [[ $ASSUME_YES == 1 ]]; then
+    px_action "${ACTION:-status}"; return
+  fi
+  banner
+  # The menu comes back after each action (subshell: an error returns here); Quit leaves.
+  while :; do
+    case $(menu "MCP server is installed in container $CTID. What now?" 2 \
+           "Install / repair / change tools (keeps data)" "List models" "Add model (one you already run)" \
+           "Remove model" "Set default model" "Status" "Connection info + join code" \
+           "Open WebUI (install, refresh, remove)" "Rotate tokens" "Update" \
+           "Uninstall: remove the container, KEEP the data in /opt/sudohomelab/mcp" \
+           "Uninstall: remove the container AND all data (memory, vault, files)" "Quit") in
+      1) ACTION=install ;; 2) ACTION=models ;; 3) ACTION=add-model ;; 4) ACTION=remove-model ;;
+      5) ACTION=default-model ;; 6) ACTION=status ;; 7) ACTION=info ;; 8) ACTION=webui ;;
+      9) ACTION=rotate ;; 10) ACTION=update ;; 11) ACTION=uninstall; PURGE=0 ;; 12) ACTION=uninstall; PURGE=1 ;;
+      *) return 0 ;;
+    esac
+    PASS=()
+    ( px_action "$ACTION" ) || true
+    [[ $ACTION == uninstall ]] && [[ -z $(find_ct) ]] && return 0
+    read -r -p "  ${C_GRAY}Enter = back to the menu${C_RESET} " _ </dev/tty || true
+  done
 }
 
 px_main "$@"

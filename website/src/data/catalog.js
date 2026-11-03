@@ -141,12 +141,22 @@ const MCP_UNINSTALL = {
 const MCP_DOCS = [
   {
     title: 'What the script does',
-    text: 'One script installs an MCP server (one address and one token for every tool) and an OpenAI-compatible model router. No chat model is installed: you connect the ones you already run. Run it again any time for a menu: Install, List models, Add model, Remove model, Set default model, Status, Connection info, Rotate tokens, Update, Uninstall.',
+    text: 'One script installs an MCP server (one address and one token for every tool), an OpenAI-compatible model router and Open WebUI. No chat model is installed: AI Node machines join with a join code, or you connect models you already run. Run it again any time for a menu that comes back after every action: Install, List models, Add model, Remove model, Set default model, Status, Connection info, Open WebUI, Rotate tokens, Update, Uninstall, Quit.',
     items: [
       'Tools: web search and page reading (private SearXNG), long-term memory and a knowledge base (Postgres + pgvector, bge-m3 embeddings and reranker on CPU), files limited to one folder, and an encrypted vault.',
       'Pick a profile: Minimal (search + memory) or Standard (+ files, vault), or choose the tools one by one.',
-      'At the end it prints the MCP address and token, the router address, and a join code for AI machines.',
+      'At the end it prints the MCP address and token, the router address, the Open WebUI login, and a join code for AI Node machines.',
       'Every request needs the token. Nothing is opened to the internet: use your LAN or your own tailnet.',
+    ],
+  },
+  {
+    title: 'Open WebUI (installed by default)',
+    text: 'Chat in the browser at `http://<ip>:3000`. It is wired to the router, so every model an AI Node adds shows up there by itself (and disappears when it is removed), with the MCP tools already turned on.',
+    items: [
+      'The admin login is made for you and shown in Connection info: change the password in Settings → Account.',
+      'Every model gets the MCP tools by default, with native function calling, so web search, memory and files just work in a new chat.',
+      'Uploaded documents use the MCP\'s own bge-m3 embeddings: no extra model download.',
+      'Skip it with `--webui=none`; add, refresh or remove it later from the menu (removing keeps its chats and users).',
     ],
   },
   {
@@ -172,6 +182,52 @@ const MCP_DOCS = [
       'Proxmox: creates one unprivileged Debian container with Docker inside. Settings stay on the host in /opt/sudohomelab/mcp, so uninstalling can keep them.',
       'Tailscale: inside the container (HTTPS address via tailscale serve), on the Proxmox host (a subnet route you approve), or none.',
       'Needs about 4 GB of RAM and 15 GB of disk.',
+    ],
+  },
+]
+
+// AI Node (SudoHomelab Script 2): AI_Tools/<platform>/ai-node.sh
+const NODE_AVAILABLE = ['linux']
+const NODE_UNINSTALL = {
+  uninstall: 'Removes the AI node: leaves the MCP router, removes its services, the Windows firewall rules (WSL) and its OpenCode entries. The downloaded models stay in /opt/sudohomelab/node/models for a reinstall.',
+  purge: 'Removes the AI node and deletes the downloaded models too.',
+  safe: 'Other programs on the machine are never touched; OpenCode is only removed if the script installed it.',
+}
+const NODE_DOCS = [
+  {
+    title: 'What the script does',
+    text: 'Runs a local AI model on a machine with a GPU (or just a CPU) and joins it to your MCP Server. Run it again any time for a menu: Status, Add a model, Remove a model, Test, Connect / Disconnect MCP, OpenCode, Connection info, Update, Uninstall, Quit.',
+    items: [
+      'Scans the hardware: NVIDIA and AMD GPUs (VRAM, what is already using it, driver), CPU, RAM and disk, and picks the engine: CUDA, Vulkan, ROCm or CPU.',
+      'Suggests the best models for that hardware from the shared catalog (4 to 96 GB of VRAM, CPU-only, GPU + RAM), with download size, memory use, context and speed for each.',
+      'Every model you pick shows a confirmation card first: download, GPU and RAM use, context, speed (measured on that GPU when we tested it, otherwise an estimate), tool calling, license.',
+      'Installs llama.cpp (prebuilt) behind llama-swap as one OpenAI-compatible address with an API key. Several models can be installed; they load on demand.',
+      'Tests every model it installs: a chat with its real speed, a tool call, and the model using real MCP tools through the router.',
+    ],
+  },
+  {
+    title: 'Join your MCP Server',
+    text: 'Paste the join code from the MCP Server (Connection info). The node adds its models to the router as `model@machine`, so Open WebUI, OpenCode and every other app on the MCP can use them, and the models get the MCP tools.',
+    items: [
+      'Adding or removing a model updates the router (and Open WebUI) by itself.',
+      'OpenCode: the script can install it for your user and point it at the node\'s models and the MCP tools (menu: OpenCode).',
+      '`--vram=GB` plans for less than the whole card, to leave room for other programs.',
+    ],
+  },
+  {
+    title: 'Windows (WSL)',
+    items: [
+      'Run the Linux command inside WSL (Ubuntu) with systemd on. NVIDIA GPUs work through the Windows driver.',
+      'It opens the node\'s port in the Windows firewall for your LAN and Tailscale only (Windows asks for admin rights), and fixes replies when Tailscale routes your LAN.',
+      'Use mirrored networking (`networkingMode=mirrored` in .wslconfig) so other machines can reach it. AMD GPUs on Windows: native Windows version coming.',
+    ],
+  },
+  {
+    title: 'Tested models (RTX 3090)',
+    items: [
+      '4 GB: Qwen3.5-4B, 87 tok/s · 6 GB: Qwen3.5-4B Q8, 89 tok/s · 8 GB: Qwen3.5-9B, 123 tok/s · 10 GB: Qwen3.5-9B Q6, 103 tok/s',
+      '12 GB: Gemma 4 12B, 82 tok/s · 16 GB: Gemma 4 26B-A4B, 119 tok/s · 20 GB: Qwen3.8-27B IQ4, 47 tok/s · 24 GB: Qwen3.8-27B Q4, 43 tok/s (Qwen3.6-35B-A3B: 151 tok/s)',
+      'Every one passed chat, tool calling and the MCP tools through the router.',
     ],
   },
 ]
@@ -586,8 +642,10 @@ export const CATEGORIES = [
     apps: [
       { id: 'ollama', name: 'Ollama', icon: 'ollama', desc: 'Run Llama, Qwen, Mistral and friends locally with one command.', ports: [11434], platforms: ALL, min: { ram: 8, cpu: 4, gpu: true }, tags: ['llm'] },
       { id: 'openwebui', name: 'Open WebUI', icon: 'open-webui', desc: 'ChatGPT-style interface for local and cloud models.', ports: [3000], platforms: ALL, min: { ram: 2, cpu: 2 }, tags: ['llm', 'chat'] },
-      { id: 'mcp-full', name: 'MCP Server: Full Install', icon: null, desc: 'One MCP address for every tool (search, memory, files, vault) plus a model router for the models you already run.', ports: [8790, 8791], platforms: ['proxmox', 'linux', 'truenas'], min: { ram: 4, cpu: 2 }, tags: ['mcp', 'original'], original: true,
-        status: 'beta', available: MCP_AVAILABLE, script: 'mcp-server', uninstall: MCP_UNINSTALL, docs: MCP_DOCS, note: 'Installs the tools only: connect your models with Add model in its menu.' },
+      { id: 'mcp-full', name: 'MCP Server: Full Install', icon: null, desc: 'One MCP address for every tool (search, memory, files, vault), a model router every AI Node joins, and Open WebUI with the tools turned on.', ports: [8790, 8791, 3000], platforms: ['proxmox', 'linux', 'truenas'], min: { ram: 4, cpu: 2 }, tags: ['mcp', 'original'], original: true,
+        status: 'beta', available: MCP_AVAILABLE, script: 'mcp-server', uninstall: MCP_UNINSTALL, docs: MCP_DOCS, note: 'Installs the tools, the router and Open WebUI: models come from AI Node machines (join code) or Add model in its menu.' },
+      { id: 'ai-node', name: 'AI Node: Local Models', icon: null, desc: 'Scans your GPU, suggests the best model with how it will run, installs it and joins your MCP Server.', ports: [8080], platforms: ['proxmox', 'linux', 'truenas', 'windows'], min: { ram: 8, cpu: 4, gpu: true }, tags: ['llm', 'mcp', 'original'], original: true,
+        status: 'beta', available: NODE_AVAILABLE, script: 'ai-node', uninstall: NODE_UNINSTALL, docs: NODE_DOCS, note: 'Windows: run the Linux command inside WSL (Ubuntu). Needs the join code from the MCP Server to join it.' },
       { id: 'mcp-picker', name: 'MCP Tool Selector', icon: null, desc: 'Pick exactly which MCP tools to expose while installing, and change them later from the menu.', ports: [8790], platforms: ['proxmox', 'linux', 'truenas'], min: { ram: 2, cpu: 2 }, tags: ['mcp', 'original'], original: true,
         status: 'beta', available: MCP_AVAILABLE, script: 'mcp-server', uninstall: MCP_UNINSTALL, docs: MCP_DOCS, note: 'Built into the MCP Server script: pick Custom when it asks for the tools.' },
       { id: 'opencode', name: 'OpenCode', icon: 'opencode', desc: 'Open-source AI coding agent for your terminal.', ports: [], platforms: ['linux', 'windows', 'macos'], min: { ram: 2, cpu: 2 }, tags: ['coding', 'cli'] },
