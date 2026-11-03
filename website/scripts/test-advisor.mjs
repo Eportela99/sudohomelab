@@ -41,7 +41,7 @@ const msg = (content, stop_reason) => () => ({ id: 'm', type: 'message', role: '
 
 console.log('1) report + models via tools')
 script = [
-  msg([{ type: 'tool_use', id: 't1', name: 'show_lab_report', input: { machine: 'Old desktop / laptop', cpu: 'i7-8700', ram_gb: 32, storage: '4–10 TB', gpu: 'NVIDIA', gpu_model: 'GTX 1060 6GB', goals: ['Media', 'AI'] } }], 'tool_use'),
+  msg([{ type: 'tool_use', id: 't1', name: 'show_lab_report', input: { machine: 'Old desktop / laptop', cpu: 'i7-8700', ram_gb: 32, storage_tb: 4, gpu: 'NVIDIA', gpu_model: 'GTX 1060 6GB', goals: ['Media', 'AI'] } }], 'tool_use'),
   (body) => {
     const tr = body.messages.at(-1).content[0]
     console.log('   tool_result:', tr.content.slice(0, 260), '...')

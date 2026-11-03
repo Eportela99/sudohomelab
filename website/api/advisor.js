@@ -38,7 +38,7 @@ const SYSTEM = `You are the sudo homelab advisor on sudohomelab.vercel.app. Visi
 
 How you work:
 - Never do the math yourself. For anything about AI models (which model, speed, memory, context), call suggest_models. For a full plan (host OS, which stacks fit, RAM budget), call show_lab_report: it also draws a report card in the chat.
-- If something important is missing, ask for it in one short question (GPU model with its memory, RAM, what they want to run). Otherwise assume sensible defaults and say so.
+- If something important is missing, ask for it in one short question (GPU model with its memory, RAM, what they want to run). Otherwise assume sensible defaults and say so in one short line, e.g. "I assumed the 12 GB RTX 3060 (there is also an 8 GB one)." Always say which memory size you assumed when a GPU comes in several.
 - After a tool call, explain the result in plain words: 2 to 5 short sentences or a few bullets. Quote the numbers from the tools exactly. Speeds marked "measured" were measured on that GPU; the rest are estimates.
 - Point to installers with these page links:
 ${STACK_LINKS}
@@ -71,12 +71,12 @@ const TOOLS = [
         machine: { type: 'string', enum: MACHINES },
         cpu: { type: 'string', description: 'CPU model or class, like "Intel i5-12500T" or "N100".' },
         ram_gb: { type: 'number' },
-        storage: { type: 'string', enum: STORAGE },
+        storage_tb: { type: 'number', description: 'Total storage in TB (e.g. 0.5, 2, 4, 12).' },
         gpu: { type: 'string', enum: GPUS },
         gpu_model: { type: 'string', description: 'For NVIDIA/AMD: the card with its memory, like "RTX 3060 12GB".' },
         goals: { type: 'array', items: { type: 'string', enum: GOALS } },
       },
-      required: ['machine', 'cpu', 'ram_gb', 'storage', 'gpu', 'goals'],
+      required: ['machine', 'cpu', 'ram_gb', 'storage_tb', 'gpu', 'goals'],
     },
   },
 ]
@@ -109,13 +109,16 @@ function runSuggest(input) {
   }
 }
 
+// The page's storage choices: < 500 GB, 1–2 TB, 4–10 TB, 10 TB+
+const storageBucket = (tb) => (!(tb > 0) ? STORAGE[1] : tb < 0.75 ? STORAGE[0] : tb < 3 ? STORAGE[1] : tb < 10 ? STORAGE[2] : STORAGE[3])
+
 function toAnswers(input) {
   const pick = (v, list, d) => (list.includes(v) ? v : d)
   return {
     machine: pick(input.machine, MACHINES, 'Old desktop / laptop'),
     cpu: String(input.cpu || 'unknown').slice(0, 80),
     ram: `${Math.max(1, Math.round(Number(input.ram_gb) || 8))} GB`,
-    storage: pick(input.storage, STORAGE, '1–2 TB'),
+    storage: storageBucket(Number(input.storage_tb)),
     gpu: pick(input.gpu, GPUS, 'None'),
     gpuModel: input.gpu_model && ['NVIDIA', 'AMD'].includes(input.gpu) ? String(input.gpu_model).slice(0, 60) : undefined,
     goals: (Array.isArray(input.goals) ? input.goals : []).filter((g) => GOALS.includes(g)),
